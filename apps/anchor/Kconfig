@@ -1,0 +1,24 @@
+mainmenu "RTLS - Ancora"
+
+menu "Ancora"
+
+config RTLS_NODE_ID
+	hex "Endereço curto da âncora"
+	default 0xA001
+	range 0xA001 0xAFFF
+
+config RTLS_ANCHOR_POS_X_MM
+	int "Posição X da âncora (mm)"
+	default 0
+
+config RTLS_ANCHOR_POS_Y_MM
+	int "Posição Y da âncora (mm)"
+	default 0
+
+config RTLS_ANCHOR_POS_Z_MM
+	int "Posição Z da âncora (mm)"
+	default 0
+
+endmenu
+
+source "Kconfig.zephyr"

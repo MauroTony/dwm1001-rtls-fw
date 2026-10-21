@@ -1,0 +1,28 @@
+mainmenu "RTLS - Gateway"
+
+menu "Gateway"
+
+config RTLS_NODE_ID
+	hex "Endereço curto do gateway"
+	default 0x0001
+	range 0x0001 0x0FFF
+	help
+	  As tags enviam POSITION para RTLS_ADDR_GATEWAY (0x0001); mude
+	  apenas junto com rtls/frames.h.
+
+config RTLS_GATEWAY_MAX_TAGS
+	int "Capacidade da tabela de tags"
+	default 16
+	range 1 64
+
+config RTLS_GATEWAY_TAG_TIMEOUT_MS
+	int "Expiração de uma tag sem atualização (ms)"
+	default 2000
+
+config RTLS_GATEWAY_PUBLISH_MS
+	int "Período de publicação do snapshot para o host (ms)"
+	default 100
+
+endmenu
+
+source "Kconfig.zephyr"

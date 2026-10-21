@@ -1,0 +1,4 @@
+/* Barramento do DW1000 (já habilitado na placa; explícito por segurança). */
+&spi2 {
+	status = "okay";
+};

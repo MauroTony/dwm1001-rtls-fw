@@ -1,0 +1,27 @@
+mainmenu "RTLS - Tag"
+
+menu "Tag"
+
+config RTLS_NODE_ID
+	hex "Endereço curto da tag"
+	default 0x1001
+	range 0x1001 0x1FFF
+
+config RTLS_TAG_UPDATE_RATE_HZ
+	int "Taxa de atualização da posição (Hz)"
+	default 10
+	range 1 50
+
+config RTLS_TAG_ANCHOR_BASE_ID
+	hex "Endereço da primeira âncora consultada"
+	default 0xA001
+	range 0xA001 0xAFFF
+
+config RTLS_TAG_NUM_ANCHORS
+	int "Quantidade de âncoras (IDs consecutivos a partir da base)"
+	default 4
+	range 1 4
+
+endmenu
+
+source "Kconfig.zephyr"
