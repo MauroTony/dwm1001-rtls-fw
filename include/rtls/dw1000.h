@@ -4,8 +4,13 @@
  * Driver singleton ligado ao nó "decawave,dw1000" do devicetree da placa.
  * Todas as funções devem ser chamadas pela thread dona do rádio (ver
  * docs/02-arquitetura.md, seção 2); nenhuma é segura em contexto de ISR.
+ * A ISR do pino de IRQ só acorda a thread que está esperando um evento.
  *
- * Estado: M0 implementa reset + probe (DEV_ID). O restante entra no M1.
+ * Uso típico:
+ *     dw1000_init();
+ *     struct dw1000_phy_config phy = DW1000_PHY_CONFIG_DEFAULT(pan, addr);
+ *     dw1000_configure(&phy);
+ *     dw1000_transmit(...) / dw1000_receive(...)
  */
 
 #ifndef RTLS_DW1000_H_
@@ -30,19 +35,25 @@ extern "C" {
 /** Ticks por "UWB microsecond" (512/499,2 µs), unidade usada nos atrasos. */
 #define DW1000_UUS_TO_TICKS 65536ULL
 
+/** Maior quadro aceito (sem os 2 bytes de FCS). */
+#define DW1000_MAX_FRAME_LEN 125U
+
 /** Parâmetros da camada física (docs/03-protocolo-uwb.md, seção 1). */
 struct dw1000_phy_config {
-	uint8_t channel;        /**< canal UWB (1-5, 7) */
-	uint8_t prf_mhz;        /**< 16 ou 64 */
-	uint16_t preamble_len;  /**< 64, 128, 256, 512, 1024, 1536, 2048 ou 4096 símbolos */
-	uint8_t pac_size;       /**< 8, 16, 32 ou 64 */
-	uint8_t preamble_code;  /**< código de preâmbulo (TX e RX) */
-	uint16_t data_rate_kbps; /**< 110, 850 ou 6800 */
-	uint16_t pan_id;        /**< PAN para a filtragem de quadros */
-	uint16_t short_addr;    /**< endereço curto do nó */
+	uint8_t channel;         /**< canal UWB */
+	uint8_t prf_mhz;         /**< PRF (MHz) */
+	uint16_t preamble_len;   /**< símbolos de preâmbulo */
+	uint8_t pac_size;        /**< tamanho do PAC */
+	uint8_t preamble_code;   /**< código de preâmbulo (TX e RX) */
+	uint16_t data_rate_kbps; /**< taxa de dados */
+	uint16_t pan_id;         /**< PAN para a filtragem de quadros */
+	uint16_t short_addr;     /**< endereço curto do nó */
 };
 
-/** Configuração padrão do projeto: canal 5, PRF 64, preâmbulo 128 (código 9), 6,8 Mbps. */
+/**
+ * Configuração do projeto: canal 5, PRF 64, preâmbulo 128 (código 9, PAC 8),
+ * 6,8 Mbps. É a única combinação suportada por dw1000_configure().
+ */
 #define DW1000_PHY_CONFIG_DEFAULT(_pan, _addr)                                                    \
 	{                                                                                          \
 		.channel = 5, .prf_mhz = 64, .preamble_len = 128, .pac_size = 8,                   \
@@ -68,8 +79,19 @@ struct dw1000_rx_info {
 	int16_t fp_power_cdbm;  /**< potência do primeiro caminho (centésimos de dBm) */
 };
 
+/** Contadores de diagnóstico do driver. */
+struct dw1000_stats {
+	uint32_t tx_ok;
+	uint32_t tx_late;    /**< TX atrasado programado tarde demais (HPDWARN) */
+	uint32_t rx_ok;
+	uint32_t rx_timeout; /**< dw1000_receive() sem quadro no prazo */
+	uint32_t rx_too_big;
+};
+
 /**
- * Reseta o DW1000, confere o DEV_ID e aplica a configuração base.
+ * Reseta o DW1000, confere o DEV_ID e faz a inicialização base: OTP (XTAL
+ * trim, LDO), carga do microcódigo LDE, relógios, IRQ e atrasos de antena do
+ * Kconfig. Ao final o SPI passa para o clock máximo do devicetree.
  *
  * @retval 0 sucesso
  * @retval -ENODEV barramento indisponível ou DEV_ID inesperado
@@ -79,42 +101,49 @@ int dw1000_init(void);
 /** Lê o registrador DEV_ID (útil para diagnóstico). */
 int dw1000_read_dev_id(uint32_t *dev_id);
 
-/** Aplica a configuração de PHY e da filtragem de quadros. TODO(M1) */
+/**
+ * Aplica a configuração de PHY e da filtragem de quadros (aceita quadros de
+ * dados do PAN para o próprio endereço ou broadcast).
+ *
+ * @retval -ENOTSUP combinação de PHY diferente de DW1000_PHY_CONFIG_DEFAULT
+ */
 int dw1000_configure(const struct dw1000_phy_config *cfg);
 
-/** Define os atrasos de antena (ticks). TODO(M1) */
+/** Define os atrasos de antena (ticks). */
 int dw1000_set_antenna_delay(uint16_t tx_ticks, uint16_t rx_ticks);
 
 /**
  * Transmite um quadro e bloqueia até o fim do TX.
  *
  * @param frame quadro sem FCS (o DW1000 acrescenta os 2 bytes)
- * @param len   tamanho de @p frame
+ * @param len   tamanho de @p frame (até DW1000_MAX_FRAME_LEN)
  * @param opts  opções (NULL = TX imediato, sem RX depois)
  * @param tx_ts timestamp real de TX (ticks), pode ser NULL
  *
  * @retval -ETIME o instante do TX atrasado já tinha passado (HPDWARN)
- *
- * TODO(M1)
+ * @retval -EIO   o TX não terminou no prazo esperado
  */
 int dw1000_transmit(const void *frame, size_t len, const struct dw1000_tx_opts *opts,
 		    uint64_t *tx_ts);
 
 /**
  * Liga o RX (se ainda não estiver ligado) e bloqueia até receber um quadro
- * válido, ocorrer erro ou estourar @p timeout.
+ * válido ou estourar @p timeout. Quadros com erro ou rejeitados pelo filtro
+ * são descartados em hardware e o RX religa sozinho.
  *
- * @return tamanho do quadro (>= 0) ou erro negativo (-EAGAIN no timeout)
- *
- * TODO(M1)
+ * @return tamanho do quadro (>= 0) ou erro negativo (-EAGAIN no timeout,
+ *         -EMSGSIZE se o quadro não couber em @p size)
  */
 int dw1000_receive(void *buf, size_t size, struct dw1000_rx_info *info, k_timeout_t timeout);
 
-/** Lê o relógio de sistema do DW1000 (ticks, 40 bits). TODO(M1) */
+/** Lê o relógio de sistema do DW1000 (ticks, 40 bits). */
 uint64_t dw1000_sys_time(void);
 
-/** Desliga TX/RX imediatamente (TRXOFF). TODO(M1) */
+/** Desliga TX/RX imediatamente (TRXOFF) e limpa os eventos pendentes. */
 void dw1000_idle(void);
+
+/** Copia os contadores de diagnóstico. */
+void dw1000_get_stats(struct dw1000_stats *stats);
 
 #ifdef __cplusplus
 }
