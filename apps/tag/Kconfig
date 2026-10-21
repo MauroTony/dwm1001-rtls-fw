@@ -22,6 +22,17 @@ config RTLS_TAG_NUM_ANCHORS
 	default 4
 	range 1 4
 
+config RTLS_TAG_CSV_OUTPUT
+	bool "Imprime cada distância em CSV na UART"
+	default y
+	help
+	  Uma linha por distância: R,<round>,<t_ms>,<ancora>,<dist_mm>,
+	  <rx_power_cdbm>,<fp_power_cdbm>. Lida por tools/rtls_log.py.
+
+config RTLS_TAG_STATS_PERIOD_S
+	int "Período do resumo de estatísticas do TWR (s; 0 desliga)"
+	default 10
+
 endmenu
 
 source "Kconfig.zephyr"

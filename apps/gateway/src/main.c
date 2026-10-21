@@ -57,6 +57,8 @@ static void publish_snapshot(void)
 
 int main(void)
 {
+	const struct dw1000_phy_config phy =
+		DW1000_PHY_CONFIG_DEFAULT(CONFIG_RTLS_PAN_ID, CONFIG_RTLS_NODE_ID);
 	uint8_t frame[RTLS_FRAME_MAX_LEN];
 	struct dw1000_rx_info info;
 	int64_t next_publish_ms;
@@ -79,6 +81,9 @@ int main(void)
 	}
 
 	err = dw1000_init();
+	if (err == 0) {
+		err = dw1000_configure(&phy);
+	}
 	if (err) {
 		LOG_ERR("DW1000 indisponivel (%d)", err);
 		rtls_status_led_error(true);
@@ -90,11 +95,6 @@ int main(void)
 		const int64_t wait_ms = MAX(next_publish_ms - k_uptime_get(), 0);
 		int len = dw1000_receive(frame, sizeof(frame), &info, K_MSEC(wait_ms));
 
-		if (len == -ENOSYS) {
-			LOG_WRN("RX do DW1000 ainda nao implementado (M1/M5)");
-			k_sleep(K_FOREVER);
-			continue;
-		}
 		if (len > 0) {
 			handle_frame(frame, (size_t)len, &info);
 		}
