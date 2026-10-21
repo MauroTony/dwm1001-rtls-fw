@@ -1,0 +1,31 @@
+mainmenu "RTLS - UWB ping-pong (bancada do M1)"
+
+menu "Ping-pong"
+
+choice PINGPONG_ROLE
+	prompt "Papel desta placa"
+	default PINGPONG_ROLE_PING
+
+config PINGPONG_ROLE_PING
+	bool "ping: envia e mede a taxa de perda"
+
+config PINGPONG_ROLE_PONG
+	bool "pong: responde com TX atrasado"
+
+endchoice
+
+config PINGPONG_PERIOD_MS
+	int "Intervalo entre pings (ms)"
+	default 100
+
+config PINGPONG_REPLY_US
+	int "Atraso do pong em relação ao RX do ping (µs, TX atrasado)"
+	default 1000
+
+config PINGPONG_REPORT_EVERY
+	int "Imprime o resumo a cada N pings"
+	default 100
+
+endmenu
+
+source "Kconfig.zephyr"

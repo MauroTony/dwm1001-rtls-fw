@@ -84,6 +84,7 @@ ZTEST(frames, test_message_sizes)
 	zassert_equal(rtls_msg_size(RTLS_MSG_POLL), 11);
 	zassert_equal(rtls_msg_size(RTLS_MSG_REPORT), 24);
 	zassert_equal(rtls_msg_size(RTLS_MSG_POSITION), 26);
+	zassert_equal(rtls_msg_size(RTLS_MSG_PING), 5);
 	zassert_equal(rtls_msg_size(0x99), 0);
 
 	/* O maior quadro (POSITION) cabe com folga no limite de 127 B. */

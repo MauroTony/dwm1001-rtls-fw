@@ -18,6 +18,8 @@ size_t rtls_msg_size(uint8_t type)
 		return sizeof(struct rtls_msg_report);
 	case RTLS_MSG_POSITION:
 		return sizeof(struct rtls_msg_position);
+	case RTLS_MSG_PING:
+		return sizeof(struct rtls_msg_ping);
 	default:
 		return 0;
 	}

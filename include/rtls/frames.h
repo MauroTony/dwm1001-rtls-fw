@@ -42,6 +42,7 @@ enum rtls_msg_type {
 	RTLS_MSG_FINAL = 0x22,
 	RTLS_MSG_REPORT = 0x23,
 	RTLS_MSG_POSITION = 0x30,
+	RTLS_MSG_PING = 0xF0, /**< diagnóstico de enlace (samples/uwb_pingpong) */
 };
 
 /** Flags do quadro POSITION (também usados em rtls_position e no host_if). */
@@ -108,7 +109,14 @@ struct rtls_msg_position {
 	uint16_t std_mm[3]; /**< desvio padrão por eixo, saturado em 65535 */
 } __packed;
 
+/** PING: diagnóstico de enlace; o "pong" devolve o mesmo seq. */
+struct rtls_msg_ping {
+	uint8_t type;
+	uint32_t seq;
+} __packed;
+
 BUILD_ASSERT(sizeof(struct rtls_mac_hdr) == 9);
+BUILD_ASSERT(sizeof(struct rtls_msg_ping) == 5);
 BUILD_ASSERT(sizeof(struct rtls_msg_beacon) == 6);
 BUILD_ASSERT(sizeof(struct rtls_msg_poll) == 11);
 BUILD_ASSERT(sizeof(struct rtls_msg_resp) == 2);
