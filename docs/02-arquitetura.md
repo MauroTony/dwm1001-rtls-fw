@@ -94,7 +94,9 @@ dwm1001-rtls-fw/
 │   ├── twr/                 # matemática do DS-TWR + máquinas de estado
 │   ├── loc/                 # multilateração + filtro de Kalman
 │   └── host_if/             # interface SPI escravo com o host
+├── samples/uwb_pingpong/    # bancada do driver (M1)
 ├── tests/unit/              # ztest (native_sim)
+├── tools/rtls_log.py        # captura CSV, estatísticas, calibração de antena
 ├── scripts/
 │   ├── setup/               # setup-windows.ps1, setup-linux.sh
 │   ├── env.ps1, env.sh      # ativam o ambiente num terminal novo
@@ -155,13 +157,20 @@ Laço *responder*, sempre em RX:
 
 | Thread | Papel | Prioridade | Função |
 |--------|-------|------------|--------|
-| `dw1000_evt` (M1) | todos | cooperativa `K_PRIO_COOP(2)` | lê status/timestamps após a IRQ e acorda quem espera |
+| ISR do GPIO P0.19 | todos | ISR | só libera o semáforo do driver DW1000 |
 | `main` | tag | preemptiva 0 | ciclo de 10 Hz: TWR → EKF → POSITION |
 | `main` | anchor | preemptiva 0 | laço do responder |
 | `main` | gateway | preemptiva 0 | RX de POSITION → tabela |
 | `host_if` (M6) | gateway | preemptiva 5 | transações SPIS, DRDY |
 | `logging` | todos | baixa | processamento de log diferido |
 | timer `heartbeat` | todos | ISR | pisca o LED verde (500 ms) |
+| workqueue do sistema | anchor | cooperativa | resumo das estatísticas do TWR a cada 10 s |
+
+**Modelo do driver DW1000:** não há thread própria para eventos. A ISR do
+pino de IRQ só libera um semáforo. A thread que chamou `dw1000_transmit()` ou
+`dw1000_receive()` acorda, lê o `SYS_STATUS` pelo SPI e trata o evento. Isso
+mantém um único acesso ao SPI e a latência IRQ → thread na ordem de dezenas
+de µs, bem abaixo do `T_reply` de 1 ms.
 
 ## 6. Configuração (Kconfig)
 
@@ -204,7 +213,7 @@ PAN ID padrão: `0xDECA`. Detalhes dos quadros em
 | Item | RAM |
 |------|-----|
 | Kernel + drivers + logging | ~12 KB |
-| Pilhas (`main` 4 KB, `dw1000_evt` 1 KB, `host_if` 1 KB, ISR 2 KB, log 1 KB) | ~9 KB |
+| Pilhas (`main` 4 KB, `host_if` 1 KB, workqueue 1 KB, ISR 2 KB, log 1 KB) | ~9 KB |
 | Estado do EKF (6×6 `float`) + buffers de quadro | < 1 KB |
 | Tabela de tags (gateway, 16 × ~40 B) | < 1 KB |
 

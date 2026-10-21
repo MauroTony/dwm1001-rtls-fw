@@ -113,8 +113,12 @@ Com `T_reply = 1,0 ms`, `T_slot = 1,0 ms` e N = 4 âncoras:
 - O TX atrasado do DW1000 ignora os 9 bits menos significativos do instante
   programado (resolução de ~8 ns). Por isso os timestamps usados no cálculo
   são sempre os **reais**, lidos do registrador `TX_STAMP` após o envio.
-- A janela de RX da tag depois do POLL vai até `T_reply + N·T_slot + 0,5 ms`.
-  Depois do FINAL, a mesma regra vale para os REPORTs.
+- O RX da tag liga sozinho (*wait-for-response*) 300 µs antes do primeiro
+  slot, a tempo de pegar o preâmbulo.
+- A janela de RESPs fecha no **meio do slot do FINAL**, em
+  `T_reply + (N−1)·T_slot + T_slot/2`. Se uma âncora faltar, ainda sobra
+  tempo para programar o FINAL. A janela de REPORTs vai até
+  `T_reply + N·T_slot + CONFIG_RTLS_TWR_RX_MARGIN_US`.
 
 ## 5. Acesso ao meio
 

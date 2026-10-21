@@ -16,15 +16,17 @@ a placa **Qorvo/Decawave DWM1001-DEV** (nRF52832 + DW1000), sobre o
 
 ## Estado
 
-**M0 (estrutura base) concluído:**
-- esqueleto dos três firmwares;
-- probe do DW1000;
-- matemática do DS-TWR e codec de quadros, com testes;
-- scripts de setup.
+| Marco | Situação |
+|-------|----------|
+| M0: ambiente e estrutura | concluído |
+| M1: driver DW1000 próprio | implementado; validar em bancada com `samples/uwb_pingpong` |
+| M2: DS-TWR 1×1 + calibração | implementado; validar e calibrar com `tools/rtls_log.py` |
+| M3: DS-TWR 1×4 a 10 Hz | implementado; validar em bancada |
+| M4 a M8 | pendentes (o EKF, núcleo do TCC, é o M4) |
 
-Os próximos marcos estão em
-[docs/01-planejamento.md](docs/01-planejamento.md#6-roadmap-marcos). Os pontos
-a implementar estão marcados no código como `TODO(Mx)`.
+O roteiro de validação está em [docs/07-bancada.md](docs/07-bancada.md) e o
+roadmap completo em [docs/01-planejamento.md](docs/01-planejamento.md#6-roadmap-marcos).
+Os pontos ainda não implementados estão marcados no código como `TODO(Mx)`.
 
 ## Início rápido
 
@@ -60,6 +62,7 @@ Guia completo, com passo a passo manual e solução de problemas:
 | [04-algoritmos](docs/04-algoritmos.md) | DS-TWR, calibração de antena, multilateração, EKF |
 | [05-interface-spi-gateway](docs/05-interface-spi-gateway.md) | Protocolo SPI gateway → host |
 | [06-configuracao-ambiente](docs/06-configuracao-ambiente.md) | Setup Windows/Linux, build, gravação, debug |
+| [07-bancada](docs/07-bancada.md) | Roteiro de validação em hardware do M1 ao M3, calibração de antena |
 
 ## Estrutura
 
@@ -68,7 +71,9 @@ apps/{tag,anchor,gateway}   firmwares por papel
 drivers/dw1000              driver próprio do DW1000 (timestamps de 40 bits)
 include/rtls                APIs públicas
 lib/{twr,loc,proto,host_if,common}
+samples/uwb_pingpong        bancada do driver (M1)
 tests/unit                  ztest (native_sim)
+tools/rtls_log.py           captura do CSV, estatísticas e calibração de antena
 scripts/                    setup, ativação do ambiente, lista de placas
 docs/                       planejamento e documentação técnica
 west.yml                    Zephyr v4.4.0 + módulos mínimos

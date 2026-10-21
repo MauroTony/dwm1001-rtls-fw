@@ -79,8 +79,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup\setup-windows.ps1
 O que o script faz (cada passo é idempotente):
 
 1. **winget:** `Kitware.CMake`, `Ninja-build.Ninja`, `oss-winget.gperf`,
-   `oss-winget.dtc`, `Git.Git`, `7zip.7zip`. Só instala o que faltar no PATH
-   e confere as versões mínimas.
+   `oss-winget.dtc`, `Git.Git`, `7zip.7zip`. Só instala o que faltar no PATH.
+   Se o winget falhar, o script segue: CMake e Ninja vêm do pip dentro do venv
+   (passo 4). O dtc é opcional, e o gperf só é usado com `CONFIG_USERSPACE`.
+   Só Git e 7-Zip são obrigatórios.
 2. **Python 3.12:** usa o `py -3.12` se existir. Senão instala pelo *Python
    install manager* (`pymanager install 3.12`) ou pelo winget
    (`Python.Python.3.12`).
@@ -330,6 +332,12 @@ Rodam em `native_sim`, que exige Linux ou WSL:
 west twister -T tests -p native_sim
 ```
 
+### 6.6 Bancada (M1 a M3)
+
+O app de teste do driver (`samples/uwb_pingpong`), a captura do CSV e a
+calibração de antena (`tools/rtls_log.py`) estão descritos em
+[07-bancada.md](07-bancada.md).
+
 ---
 
 ## 7. Solução de problemas
@@ -345,6 +353,7 @@ west twister -T tests -p native_sim
 | A porta serial some ou fica ocupada no Linux | ModemManager capturando o ttyACM | `sudo systemctl disable --now ModemManager` |
 | `DEV_ID inesperado 0xffffffff` / `0x00000000` | SPI sem resposta (DW1000 em reset ou sem alimentação) | conferir a alimentação da placa; testar com outra placa |
 | `native_sim` não compila no Windows | não suportado no Windows | use o WSL2 ou a CI |
+| winget: `Failed to extract the contents of the archive` | extração de pacotes .zip bloqueada (antivírus/política) | o script continua e instala CMake/Ninja via pip; para gperf/dtc, instale manualmente se precisar |
 | Build lento no Windows | antivírus varrendo o workspace | avalie uma exclusão do Defender para a pasta do workspace (decisão sua; afeta a segurança) |
 
 ## 8. Atualizar o Zephyr no futuro

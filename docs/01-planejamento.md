@@ -138,7 +138,15 @@ flowchart LR
     M7 --> M8
 ```
 
-### M0 — Ambiente e estrutura base · ~1 semana · **(esta entrega)**
+**Situação atual:**
+
+| Marco | Situação |
+|-------|----------|
+| M0 | concluído |
+| M1, M2, M3 | implementados e compilando; falta a validação em hardware ([07-bancada.md](07-bancada.md)) |
+| M4 a M8 | pendentes |
+
+### M0 — Ambiente e estrutura base · ~1 semana
 
 - **Tarefas:** manifesto west; módulo Zephyr (`lib/`, `drivers/`, `include/`);
   esqueleto dos três apps; scripts de setup para Windows e Linux;
@@ -159,8 +167,8 @@ flowchart LR
     aplicando os ajustes que o *User Manual* manda alterar após o reset
     (`AGC_TUNE1/2`, `DRX_TUNE*`, `LDE_CFG*`, `TX_POWER`, `RF_TXCTRL`,
     `TC_PGDELAY`, `FS_PLLTUNE`).
-  - Tratamento de IRQ: callback de GPIO → thread cooperativa de alta
-    prioridade.
+  - Tratamento de IRQ: a ISR do GPIO libera um semáforo e a thread dona do
+    rádio trata o evento.
   - TX imediato e TX atrasado (*delayed TX*), RX com timeout,
     *wait-for-response*.
   - Leitura dos timestamps de TX/RX (40 bits) e dos diagnósticos de RX
