@@ -1,0 +1,32 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Estilo Zephyr: tabs de 8, até 100 colunas.
+[*.{c,h}]
+indent_style = tab
+indent_size = 8
+max_line_length = 100
+
+[{Kconfig*,*.overlay,*.dts,*.dtsi}]
+indent_style = tab
+indent_size = 8
+
+[*.sh]
+indent_style = tab
+
+[*.ps1]
+indent_style = space
+indent_size = 4
+end_of_line = crlf
+
+[{*.yml,*.yaml,CMakeLists.txt,*.cmake}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

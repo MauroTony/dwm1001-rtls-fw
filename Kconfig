@@ -1,0 +1,8 @@
+# Raiz do Kconfig do módulo "dwm1001-rtls".
+
+menu "DWM1001 RTLS"
+
+rsource "drivers/Kconfig"
+rsource "lib/Kconfig"
+
+endmenu

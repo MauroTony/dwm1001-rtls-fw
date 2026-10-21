@@ -1,0 +1,4 @@
+name: dwm1001-rtls
+build:
+  cmake: .
+  kconfig: Kconfig

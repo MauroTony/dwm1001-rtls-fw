@@ -1,0 +1,29 @@
+# Manifesto west do firmware RTLS (topologia T2: este repositório é o
+# "manifest repository" e o workspace west é o diretório pai dele).
+#
+#   <workspace>/
+#   ├── dwm1001-rtls-fw/   <- este repositório
+#   ├── zephyr/            <- Zephyr na revisão fixada abaixo
+#   └── modules/           <- somente os módulos da name-allowlist
+#
+# Para atualizar o Zephyr: troque "revision", rode "west update" e revise o
+# guia de migração da nova versão.
+
+manifest:
+  self:
+    path: dwm1001-rtls-fw
+
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.4.0
+      import:
+        # Clona apenas os módulos necessários para o nRF52832 (Cortex-M4F).
+        name-allowlist:
+          - cmsis_6     # núcleo Cortex-M
+          - hal_nordic  # nrfx (SPI/SPIS, GPIOTE, UART...)
+          - segger      # RTT (log alternativo via J-Link)

@@ -1,0 +1,22 @@
+# Saídas de build
+build/
+build-*/
+twister-out*/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.code-workspace
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Dados de medição brutos (versionar só os tratados, em docs/ ou tools/)
+*.log
+captures/
