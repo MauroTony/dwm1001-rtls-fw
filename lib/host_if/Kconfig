@@ -1,0 +1,15 @@
+menuconfig RTLS_HOST_IF
+	bool "Interface SPI escravo com o host (gateway)"
+	depends on SPI_SLAVE
+	help
+	  Entrega a tabela de tags a um host externo via SPIS + DRDY
+	  (docs/05-interface-spi-gateway.md). Requer no devicetree o chosen
+	  "rtls,host-spi" (nó nordic,nrf-spis) e zephyr,user/drdy-gpios.
+
+if RTLS_HOST_IF
+
+module = RTLS_HOST_IF
+module-str = rtls_host_if
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # RTLS_HOST_IF

@@ -1,0 +1,11 @@
+config RTLS_PROTO
+	bool "Quadros do protocolo RTLS (montagem e parsing)"
+	help
+	  Codec dos quadros IEEE 802.15.4 + mensagens RTLS descritos em
+	  docs/03-protocolo-uwb.md. Sem dependência de hardware.
+
+config RTLS_PAN_ID
+	hex "PAN ID da rede RTLS"
+	default 0xDECA
+	range 0x0000 0xFFFE
+	depends on RTLS_PROTO

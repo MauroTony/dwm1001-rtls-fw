@@ -1,0 +1,39 @@
+menuconfig RTLS_DW1000
+	bool "Driver DW1000 próprio (timestamps de 40 bits para TWR)"
+	default y
+	depends on DT_HAS_DECAWAVE_DW1000_ENABLED
+	depends on !IEEE802154_DW1000
+	select SPI
+	select GPIO
+	help
+	  Driver do DW1000 usado pelo RTLS. Usa o mesmo nó de devicetree
+	  "decawave,dw1000" da placa, mas não pode coexistir com o driver
+	  IEEE 802.15.4 do Zephyr (CONFIG_IEEE802154_DW1000), que converte os
+	  timestamps para nanossegundos e perde a precisão necessária ao TWR.
+
+if RTLS_DW1000
+
+config RTLS_DW1000_SPI_FREQ_SLOW
+	int "Clock SPI durante a inicialização (Hz)"
+	default 2000000
+	range 125000 3000000
+	help
+	  O DW1000 só aceita SPI acima de 3 MHz depois que o PLL trava.
+	  Reset, probe e carga do LDE usam este clock; o restante usa o
+	  spi-max-frequency do devicetree.
+
+config RTLS_DW1000_TX_ANT_DLY
+	int "Atraso de antena de TX (ticks de 15,65 ps)"
+	default 16436
+	help
+	  Valor inicial; calibrar por placa (docs/04-algoritmos.md, seção 3).
+
+config RTLS_DW1000_RX_ANT_DLY
+	int "Atraso de antena de RX (ticks de 15,65 ps)"
+	default 16436
+
+module = RTLS_DW1000
+module-str = rtls_dw1000
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # RTLS_DW1000

@@ -1,0 +1,38 @@
+config RTLS_TWR_MATH
+	bool "Matemática do DS-TWR (sem dependência de hardware)"
+	help
+	  Intervalos com wrap de 40 bits e estimador DS-TWR assimétrico
+	  (docs/04-algoritmos.md, seção 2).
+
+menuconfig RTLS_TWR
+	bool "Motor DS-TWR (initiator na tag, responder na âncora)"
+	depends on RTLS_DW1000
+	select RTLS_TWR_MATH
+	select RTLS_PROTO
+
+if RTLS_TWR
+
+config RTLS_TWR_REPLY_DELAY_US
+	int "Atraso de resposta T_reply (µs)"
+	default 1000
+	range 300 5000
+	help
+	  Intervalo entre receber um quadro e transmitir a resposta no
+	  primeiro slot. Folgado no início para absorver a latência
+	  IRQ -> thread -> SPI; reduzir após medir (M3).
+
+config RTLS_TWR_SLOT_US
+	int "Espaçamento entre slots de resposta T_slot (µs)"
+	default 1000
+	range 300 5000
+
+config RTLS_TWR_RX_MARGIN_US
+	int "Margem extra das janelas de RX (µs)"
+	default 500
+	range 0 5000
+
+module = RTLS_TWR
+module-str = rtls_twr
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # RTLS_TWR

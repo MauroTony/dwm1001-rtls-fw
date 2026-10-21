@@ -1,0 +1,45 @@
+menuconfig RTLS_LOC
+	bool "Localização: multilateração + filtro de Kalman (EKF)"
+	help
+	  Estimação de posição na tag a partir das distâncias do DS-TWR
+	  (docs/04-algoritmos.md, seções 4 e 5). Sem dependência de hardware.
+
+if RTLS_LOC
+
+choice RTLS_LOC_MODE
+	prompt "Dimensão da solução"
+	default RTLS_LOC_MODE_2D
+
+config RTLS_LOC_MODE_2D
+	bool "2D (altura da tag fixa)"
+
+config RTLS_LOC_MODE_3D
+	bool "3D (exige ao menos 4 âncoras não coplanares)"
+
+endchoice
+
+config RTLS_LOC_TAG_HEIGHT_MM
+	int "Altura fixa da tag no modo 2D (mm)"
+	default 1000
+
+config RTLS_LOC_RANGE_STD_MM
+	int "Desvio padrão da medida de distância, sigma_r (mm)"
+	default 100
+	range 1 5000
+
+config RTLS_LOC_ACCEL_STD_MMS2
+	int "Desvio padrão da aceleração do modelo, sigma_a (mm/s^2)"
+	default 1000
+	range 1 100000
+
+config RTLS_LOC_GATE_CHI2_X100
+	int "Limiar do gating de inovação (chi-quadrado x 100)"
+	default 663
+	help
+	  663 = 6,63: 99 % para 1 grau de liberdade.
+
+module = RTLS_LOC
+module-str = rtls_loc
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # RTLS_LOC

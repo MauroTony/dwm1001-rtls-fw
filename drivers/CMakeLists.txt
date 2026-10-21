@@ -1,0 +1,1 @@
+add_subdirectory_ifdef(CONFIG_RTLS_DW1000 dw1000)

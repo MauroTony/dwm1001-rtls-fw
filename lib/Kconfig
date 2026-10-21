@@ -1,0 +1,5 @@
+rsource "common/Kconfig"
+rsource "proto/Kconfig"
+rsource "twr/Kconfig"
+rsource "loc/Kconfig"
+rsource "host_if/Kconfig"

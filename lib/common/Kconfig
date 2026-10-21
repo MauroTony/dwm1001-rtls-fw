@@ -1,0 +1,11 @@
+config RTLS_STATUS_LED
+	bool "LEDs de status (heartbeat, atividade UWB, erro)"
+	select GPIO
+	help
+	  Usa os aliases led0 (erro), led1 (heartbeat) e led3 (atividade)
+	  do devicetree. Aliases ausentes são ignorados.
+
+config RTLS_STATUS_LED_HEARTBEAT_MS
+	int "Meio período do heartbeat (ms)"
+	default 500
+	depends on RTLS_STATUS_LED

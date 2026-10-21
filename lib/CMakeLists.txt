@@ -1,0 +1,5 @@
+add_subdirectory_ifdef(CONFIG_RTLS_STATUS_LED common)
+add_subdirectory_ifdef(CONFIG_RTLS_PROTO proto)
+add_subdirectory_ifdef(CONFIG_RTLS_TWR_MATH twr)
+add_subdirectory_ifdef(CONFIG_RTLS_LOC loc)
+add_subdirectory_ifdef(CONFIG_RTLS_HOST_IF host_if)
