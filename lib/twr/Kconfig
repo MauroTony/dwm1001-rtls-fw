@@ -24,7 +24,10 @@ config RTLS_TWR_REPLY_DELAY_US
 config RTLS_TWR_SLOT_US
 	int "Espaçamento entre slots de resposta T_slot (µs)"
 	default 1000
-	range 300 5000
+	range 500 5000
+	help
+	  A tag para de esperar RESPs no meio do slot do FINAL. Meio slot
+	  precisa cobrir o tempo no ar (~0,2 ms) mais a programação do FINAL.
 
 config RTLS_TWR_RX_MARGIN_US
 	int "Margem extra das janelas de RX (µs)"

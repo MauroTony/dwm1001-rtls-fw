@@ -1,11 +1,15 @@
 /*
  * Motor DS-TWR: initiator (tag) e responder (âncora).
  * Sequência e temporização: docs/03-protocolo-uwb.md, seções 3 e 4.
+ *
+ * Tag e âncoras precisam usar os mesmos CONFIG_RTLS_TWR_REPLY_DELAY_US e
+ * CONFIG_RTLS_TWR_SLOT_US.
  */
 
 #ifndef RTLS_TWR_H_
 #define RTLS_TWR_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <rtls/frames.h>
@@ -44,21 +48,53 @@ struct rtls_twr_responder_cfg {
 	int32_t pos_mm[3];
 };
 
+/** Contadores por âncora, na ordem de rtls_twr_initiator_cfg.anchors. */
+struct rtls_twr_anchor_stats {
+	uint32_t resp_ok;  /**< RESP recebido */
+	uint32_t range_ok; /**< REPORT recebido e distância válida */
+	uint32_t invalid;  /**< distância fora da faixa plausível */
+};
+
+struct rtls_twr_initiator_stats {
+	uint32_t rounds;
+	uint32_t rounds_complete; /**< todas as âncoras com distância */
+	uint32_t late_tx;         /**< FINAL programado tarde demais */
+	uint32_t last_round_us;
+	uint32_t max_round_us;
+	struct rtls_twr_anchor_stats anchors[RTLS_MAX_ANCHORS_PER_ROUND];
+};
+
+struct rtls_twr_responder_stats {
+	uint32_t polls;         /**< POLLs que citam esta âncora */
+	uint32_t resp_sent;
+	uint32_t finals;
+	uint32_t final_timeout; /**< RESP enviado, FINAL não chegou */
+	uint32_t reports_sent;
+	uint32_t late_tx;       /**< RESP/REPORT programado tarde demais */
+};
+
 int rtls_twr_initiator_init(const struct rtls_twr_initiator_cfg *cfg);
 
 /**
  * Executa uma rodada completa (POLL, RESPs, FINAL, REPORTs). Bloqueia por
- * ~10 ms com 4 âncoras.
+ * ~10 ms com 4 âncoras e deixa o rádio ocioso ao terminar.
  *
  * @retval 0 rodada concluída (out->count pode ser < n_anchors)
- * @retval -ENODATA nenhuma âncora respondeu
+ * @retval -ENODATA nenhuma distância válida
+ * @retval -ETIME FINAL programado tarde demais
  */
 int rtls_twr_initiator_run_round(struct rtls_range_set *out);
+
+/** Copia os contadores do initiator e, se @p reset, zera-os. */
+void rtls_twr_initiator_get_stats(struct rtls_twr_initiator_stats *stats, bool reset);
 
 int rtls_twr_responder_init(const struct rtls_twr_responder_cfg *cfg);
 
 /** Laço do responder; só retorna em erro irrecuperável. */
 int rtls_twr_responder_run(void);
+
+/** Copia os contadores do responder e, se @p reset, zera-os. */
+void rtls_twr_responder_get_stats(struct rtls_twr_responder_stats *stats, bool reset);
 
 #ifdef __cplusplus
 }

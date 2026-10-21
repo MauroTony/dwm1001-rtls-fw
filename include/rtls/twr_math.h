@@ -35,6 +35,29 @@ static inline uint64_t rtls_dw_ts_diff(uint64_t end, uint64_t start)
 	return (end - start) & RTLS_DW_TS_MASK;
 }
 
+/** µs -> ticks do DW1000 (128 * 499,2 MHz = 63897,6 ticks/µs). */
+static inline uint64_t rtls_us_to_dw_ticks(uint32_t us)
+{
+	return (uint64_t)us * 638976ULL / 10ULL;
+}
+
+/** µs -> "UWB microseconds" (1 UUS = 512/499,2 µs), unidade do W4R_TIM. */
+static inline uint32_t rtls_us_to_uus(uint32_t us)
+{
+	return (uint32_t)((uint64_t)us * 4992ULL / 5120ULL);
+}
+
+/**
+ * Instante (40 bits) do slot @p idx: base + T_reply + idx * T_slot.
+ * Usado para RESP/REPORT (âncoras) e FINAL (tag com idx = n_anchors).
+ */
+static inline uint64_t rtls_twr_slot_ts(uint64_t base, uint32_t reply_us, uint32_t slot_us,
+					uint8_t idx)
+{
+	return (base + rtls_us_to_dw_ticks(reply_us) + (uint64_t)idx * rtls_us_to_dw_ticks(slot_us)) &
+	       RTLS_DW_TS_MASK;
+}
+
 /** Monta os intervalos a partir dos timestamps da tag e dos valores do REPORT. */
 static inline void rtls_twr_tag_intervals(struct rtls_twr_intervals *iv, uint64_t poll_tx,
 					  uint64_t resp_rx, uint64_t final_tx, uint32_t reply_b,

@@ -80,4 +80,19 @@ ZTEST(twr_math, test_tof_to_meters)
 	zassert_within(rtls_twr_tof_to_m(TRUE_TOF_TICKS), 1.5668, 1e-3);
 }
 
+ZTEST(twr_math, test_time_unit_conversions)
+{
+	/* 1 ms = 63 897 600 ticks = 975 UWB µs. */
+	zassert_equal(rtls_us_to_dw_ticks(1000), 63897600ULL);
+	zassert_equal(rtls_us_to_uus(1000), 975);
+	zassert_equal(rtls_us_to_uus(0), 0);
+}
+
+ZTEST(twr_math, test_slot_time_wraps_at_40_bits)
+{
+	/* Slot 2 com T_reply = T_slot = 1 ms, partindo de 101 ticks antes do wrap. */
+	zassert_equal(rtls_twr_slot_ts(RTLS_DW_TS_MASK - 100, 1000, 1000, 2), 191692699ULL);
+	zassert_equal(rtls_twr_slot_ts(0, 1000, 1000, 0), 63897600ULL);
+}
+
 ZTEST_SUITE(twr_math, NULL, NULL, NULL, NULL, NULL);
