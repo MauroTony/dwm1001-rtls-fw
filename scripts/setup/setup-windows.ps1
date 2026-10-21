@@ -164,21 +164,15 @@ if ($SkipPackages) {
         & winget install --id $pkg.Id @WingetArgs
         Update-SessionPath
         if (-not (Test-Tool $pkg.Cmd)) {
-            throw "Falha ao instalar $($pkg.Id) (winget retornou $LASTEXITCODE). Instale manualmente e rode novamente."
+            # CMake e Ninja ainda podem vir do pip no passo 4.
+            Write-Note "winget nao instalou $($pkg.Id) (codigo $LASTEXITCODE)."
         }
     }
 }
 
-$minimums = @{ cmake = [version]'3.20.5'; dtc = [version]'1.4.6' }
-foreach ($tool in 'cmake', 'ninja', 'gperf', 'dtc', 'git', '7z') {
-    if (-not (Test-Tool $tool)) { throw "'$tool' nao encontrado no PATH." }
-}
-foreach ($tool in $minimums.Keys) {
-    $version = Get-ToolVersion $tool
-    if ($version -and $version -lt $minimums[$tool]) {
-        throw "$tool $version e antigo demais (minimo $($minimums[$tool]))."
-    }
-    Write-Info "$tool $version"
+if (-not (Test-Tool 'git')) { throw "'git' nao encontrado no PATH." }
+if (-not $SkipSdk -and -not (Test-Tool '7z')) {
+    throw "'7z' (7-Zip) nao encontrado; necessario para extrair o Zephyr SDK."
 }
 
 # ---------------------------------------------------------------------------
@@ -229,6 +223,25 @@ $env:VIRTUAL_ENV = $VenvDir
 $env:Path = "$(Join-Path $VenvDir 'Scripts');$env:Path"
 Invoke-Native 'python' @('-m', 'pip', 'install', '--upgrade', '--quiet', 'pip', 'west')
 Write-Info "west $((Invoke-Quiet 'west' @('--version')).Output)"
+
+# CMake/Ninja ausentes ou antigos: versoes do pip dentro do venv.
+$cmakeVersion = if (Test-Tool 'cmake') { Get-ToolVersion 'cmake' } else { $null }
+if (-not $cmakeVersion -or $cmakeVersion -lt [version]'3.20.5') {
+    Write-Info "CMake ausente ou antigo ($cmakeVersion); instalando via pip no venv"
+    Invoke-Native 'python' @('-m', 'pip', 'install', '--quiet', 'cmake>=3.20.5')
+}
+if (-not (Test-Tool 'ninja')) {
+    Write-Info 'Ninja ausente; instalando via pip no venv'
+    Invoke-Native 'python' @('-m', 'pip', 'install', '--quiet', 'ninja')
+}
+Write-Info "cmake $(Get-ToolVersion 'cmake'), ninja $(Get-ToolVersion 'ninja')"
+foreach ($tool in 'gperf', 'dtc') {
+    if (Test-Tool $tool) {
+        Write-Info "$tool $(Get-ToolVersion $tool)"
+    } else {
+        Write-Note "'$tool' nao encontrado (dtc e opcional; gperf so e usado com CONFIG_USERSPACE)."
+    }
+}
 
 # ---------------------------------------------------------------------------
 Write-Step '5/8 Zephyr e modulos (west init / update)'
