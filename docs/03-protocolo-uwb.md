@@ -164,6 +164,9 @@ estimativas abaixo ainda precisam ser confirmadas em bancada:
 | Tempos apertados após medir no M3 | 0,5 ms | ~6,5 ms | 14 |
 | + posição no POLL seguinte, EKF fora do slot | 0,5 ms | ~5,5 ms | 17 |
 
+**Decisão (25/10/2026):** o M7 mantém a meta de **8 tags a 10 Hz** com os
+tempos atuais. Os cenários acima ficam registrados como evolução futura.
+
 **Referência, PANS da Decawave** (*DWM1001 System Overview* v2.1): 15 slots
 TWR por superquadro de 100 ms, ou seja, 15 tags a 10 Hz. O PANS usa SS-TWR
 (Group Poll + 4 Responses, com os timestamps da âncora dentro do Response), e
