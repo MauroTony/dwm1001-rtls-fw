@@ -1,8 +1,9 @@
 # 07 — Testes de bancada (M1 a M3)
 
-Roteiro para validar em hardware os marcos M1 (driver), M2 (DS-TWR 1×1 e
-calibração) e M3 (DS-TWR 1×4 a 10 Hz). Os critérios de aceite são os de
-[01-planejamento.md §6](01-planejamento.md#6-roadmap-marcos).
+Detalhes operacionais da bancada dos marcos M1 (driver), M2 (DS-TWR 1×1 e
+calibração) e M3 (DS-TWR 1×4 a 10 Hz). A lista de testes numerados e os
+critérios de aceite de todas as etapas estão em
+[08-etapas-e-testes.md](08-etapas-e-testes.md).
 
 Todos os comandos partem da raiz do repositório, com o ambiente ativo
 (`. .\scripts\env.ps1` ou `source scripts/env.sh`).

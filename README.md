@@ -24,8 +24,9 @@ a placa **Qorvo/Decawave DWM1001-DEV** (nRF52832 + DW1000), sobre o
 | M3: DS-TWR 1×4 a 10 Hz | implementado; validar em bancada |
 | M4 a M8 | pendentes (o EKF, núcleo do TCC, é o M4) |
 
-O roteiro de validação está em [docs/07-bancada.md](docs/07-bancada.md) e o
-roadmap completo em [docs/01-planejamento.md](docs/01-planejamento.md#6-roadmap-marcos).
+As etapas, com roteiro de teste e critério de aceite, estão em
+[docs/08-etapas-e-testes.md](docs/08-etapas-e-testes.md); o roadmap e as
+decisões, em [docs/01-planejamento.md](docs/01-planejamento.md#6-roadmap-marcos).
 Os pontos ainda não implementados estão marcados no código como `TODO(Mx)`.
 
 ## Início rápido
@@ -63,6 +64,7 @@ Guia completo, com passo a passo manual e solução de problemas:
 | [05-interface-spi-gateway](docs/05-interface-spi-gateway.md) | Protocolo SPI gateway → host |
 | [06-configuracao-ambiente](docs/06-configuracao-ambiente.md) | Setup Windows/Linux, build, gravação, debug |
 | [07-bancada](docs/07-bancada.md) | Roteiro de validação em hardware do M1 ao M3, calibração de antena |
+| [08-etapas-e-testes](docs/08-etapas-e-testes.md) | Todas as etapas (M0–M8) com testes automatizados, roteiro de bancada e critério de aceite |
 
 ## Estrutura
 

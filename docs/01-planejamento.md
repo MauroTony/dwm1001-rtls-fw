@@ -12,6 +12,8 @@ detalhes ficam nos documentos irmãos:
 | [04-algoritmos.md](04-algoritmos.md) | DS-TWR, calibração, multilateração, filtro de Kalman |
 | [05-interface-spi-gateway.md](05-interface-spi-gateway.md) | Protocolo SPI gateway → host |
 | [06-configuracao-ambiente.md](06-configuracao-ambiente.md) | Setup do ambiente (Windows/Linux), build, gravação |
+| [07-bancada.md](07-bancada.md) | Detalhes da bancada do M1 ao M3 |
+| [08-etapas-e-testes.md](08-etapas-e-testes.md) | Etapas M0–M8 com roteiro de teste e critério de aceite |
 
 ---
 
@@ -120,6 +122,7 @@ Para os detalhes, veja [02-arquitetura.md](02-arquitetura.md) e
 ## 6. Roadmap (marcos)
 
 Cada marco termina num estado **testável**, com critério de aceite binário.
+O roteiro de teste de cada marco está em [08-etapas-e-testes.md](08-etapas-e-testes.md).
 As estimativas de esforço são em semanas e são relativas, para ajustar ao
 cronograma do TCC.
 
