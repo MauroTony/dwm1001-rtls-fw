@@ -16,14 +16,14 @@ Definição no código: [`include/rtls/frames.h`](../include/rtls/frames.h).
 
 **Tempo no ar aproximado:**
 
-`T ≈ preâmbulo 130,3 µs + SFD 8,1 µs + PHR 21,5 µs + dados (bits + paridade RS) × 0,128 µs`
+`T ≈ preâmbulo 130,3 µs + SFD 8,1 µs + PHR 19,5 µs (19 bits a 850 kbps) + dados (bits + paridade RS) × 0,128 µs`
 
 | Quadro | Tamanho total | Tempo no ar |
 |--------|---------------|-------------|
-| RESP / FINAL | 13 B | ≈ 180 µs |
-| POLL | 22 B | ≈ 189 µs |
-| REPORT | 35 B | ≈ 202 µs |
-| POSITION | 37 B | ≈ 204 µs |
+| RESP / FINAL | 13 B | ≈ 177 µs |
+| POLL | 22 B | ≈ 187 µs |
+| REPORT | 35 B | ≈ 200 µs |
+| POSITION | 37 B | ≈ 202 µs |
 
 ## 2. Formato dos quadros
 

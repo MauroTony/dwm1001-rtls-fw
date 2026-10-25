@@ -184,7 +184,7 @@ static void dw_write32(uint8_t reg, uint16_t offset, uint32_t value)
 
 enum dw_clocks {
 	DW_CLK_ALL_SEQ,   /* relógios automáticos (PLL), estado normal */
-	DW_CLK_FORCE_XTI, /* sistema no cristal de 19,2 MHz (inicialização) */
+	DW_CLK_FORCE_XTI, /* relógio XTI de 19,2 MHz (cristal de 38,4 MHz / 2), na inicialização */
 	DW_CLK_FORCE_LDE, /* configuração exigida para carregar o microcódigo LDE */
 };
 
