@@ -18,8 +18,10 @@ import sys
 import time
 from collections import defaultdict
 
-LINE_RE = re.compile(r"R,(\d+),(\d+),([0-9a-fA-F]{4}),(-?\d+),(-?\d+),(-?\d+)")
-FIELDS = ["round", "t_ms", "anchor", "dist_mm", "rx_power_cdbm", "fp_power_cdbm"]
+# A coluna raw_mm (antes da correção de viés por RSL) é opcional: firmwares
+# antigos não a imprimem.
+LINE_RE = re.compile(r"R,(\d+),(\d+),([0-9a-fA-F]{4}),(-?\d+),(-?\d+),(-?\d+)(?:,(-?\d+))?")
+FIELDS = ["round", "t_ms", "anchor", "dist_mm", "rx_power_cdbm", "fp_power_cdbm", "raw_mm"]
 
 # Metros por tick do DW1000: c_ar / (128 * 499,2 MHz) ~= 4,69 mm.
 M_PER_TICK = 299702547.0 / (128 * 499.2e6)
@@ -30,7 +32,7 @@ def parse_line(line):
     match = LINE_RE.search(line)
     if not match:
         return None
-    rnd, t_ms, anchor, dist, rx_pwr, fp_pwr = match.groups()
+    rnd, t_ms, anchor, dist, rx_pwr, fp_pwr, raw = match.groups()
     return {
         "round": int(rnd),
         "t_ms": int(t_ms),
@@ -38,13 +40,17 @@ def parse_line(line):
         "dist_mm": int(dist),
         "rx_power_cdbm": int(rx_pwr),
         "fp_power_cdbm": int(fp_pwr),
+        "raw_mm": int(raw) if raw is not None else None,
     }
 
 
 def load(path):
     with open(path, newline="") as f:
         return [
-            {k: (v if k == "anchor" else int(v)) for k, v in row.items()}
+            {
+                k: (v if k == "anchor" else int(v) if v not in (None, "") else None)
+                for k, v in row.items()
+            }
             for row in csv.DictReader(f)
         ]
 
@@ -111,17 +117,19 @@ def cmd_stats(args):
     rate = (rounds - 1) / span_s if span_s > 0 else 0.0
     print(f"{rounds} rodadas com ao menos uma distância, {span_s:.1f} s, {rate:.2f} Hz")
     print(
-        f"{'âncora':>7} {'n':>6} {'sucesso':>8} {'média mm':>9} {'desvio':>7} "
-        f"{'mín':>6} {'máx':>6} {'RX dBm':>7} {'1º cam.':>7}"
+        f"{'âncora':>7} {'n':>6} {'sucesso':>8} {'média mm':>9} {'bruta mm':>9} "
+        f"{'desvio':>7} {'mín':>6} {'máx':>6} {'RX dBm':>7} {'1º cam.':>7}"
     )
     for anchor, group in by_anchor(rows).items():
         dists = [r["dist_mm"] for r in group]
+        raws = [r["raw_mm"] for r in group if r.get("raw_mm") is not None]
+        raw_mean = f"{statistics.fmean(raws):>9.1f}" if raws else f"{'-':>9}"
         std = statistics.stdev(dists) if len(dists) > 1 else 0.0
         rx = statistics.fmean(r["rx_power_cdbm"] for r in group) / 100.0
         fp = statistics.fmean(r["fp_power_cdbm"] for r in group) / 100.0
         print(
             f"{anchor:>7} {len(group):>6} {100.0 * len(group) / rounds:>7.1f}% "
-            f"{statistics.fmean(dists):>9.1f} {std:>7.1f} {min(dists):>6} {max(dists):>6} "
+            f"{statistics.fmean(dists):>9.1f} {raw_mean} {std:>7.1f} {min(dists):>6} {max(dists):>6} "
             f"{rx:>7.1f} {fp:>7.1f}"
         )
         if args.true_distance is not None:
