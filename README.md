@@ -20,7 +20,7 @@ a placa **Qorvo/Decawave DWM1001-DEV** (nRF52832 + DW1000), sobre o
 |-------|----------|
 | M0: ambiente e estrutura | concluído |
 | M1: driver DW1000 próprio | implementado; validar em bancada com `samples/uwb_pingpong` |
-| M2: DS-TWR 1×1 + calibração | implementado; validar e calibrar com `tools/rtls_log.py` |
+| M2: DS-TWR 1×1 + calibração | implementado, com correção de viés por RSL (APS011); validar e calibrar com `tools/rtls_log.py` |
 | M3: DS-TWR 1×4 a 10 Hz | implementado; validar em bancada |
 | M4 a M8 | pendentes (o EKF, núcleo do TCC, é o M4) |
 

@@ -187,8 +187,10 @@ flowchart LR
   com POLL/RESP/FINAL/REPORT; cálculo do ToF (`lib/twr/twr_math.c`); log CSV
   das distâncias; procedimento de calibração dos atrasos de antena
   ([04-algoritmos.md §3](04-algoritmos.md#3-calibração-do-atraso-de-antena));
-  correção opcional do viés pela potência de RX.
-- **Aceite:** a 1, 3 e 5 m (LOS), |viés| ≤ 10 cm e σ ≤ 5 cm em 1000 medidas.
+  correção do viés dependente do RSL pela tabela 2 do APS011
+  ([04-algoritmos.md §3.1](04-algoritmos.md#31-correção-do-viés-dependente-do-rsl-aps011)).
+- **Aceite:** a 1, 3 e 5 m (LOS), |viés| ≤ 10 cm e σ ≤ 5 cm em 1000 medidas,
+  **com** a correção por RSL ligada.
 
 ### M3 — DS-TWR 1×4 a 10 Hz · ~2 semanas
 

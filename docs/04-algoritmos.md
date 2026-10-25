@@ -86,6 +86,57 @@ Decawave APS014:
    `CONFIG_RTLS_DW1000_{TX,RX}_ANT_DLY` até o M7, `settings` a partir do M8.
 4. Validar a 1, 3 e 5 m (critério do M2).
 
+### 3.1 Correção do viés dependente do RSL (APS011)
+
+Mesmo calibrado, o timestamp do DW1000 varia com o nível do sinal recebido
+(RSL). Para PRF de 64 MHz o efeito vai de −11 cm com sinal forte a +8 cm com
+sinal fraco. Sem correção, só a 1 m (−10,5 cm) o critério de ±10 cm do M2
+já estoura.
+
+**Algoritmo** (aplicado na tag a cada distância DS-TWR):
+
+1. Estimar o RSL pela equação de Friis em LOS, a partir da própria distância
+   medida (canal 5, $c$ do vácuo, como no APS011):
+   $P_R = -14{,}3 + G + 20\log_{10}(c) - 20\log_{10}(4\pi f_c d)$
+   $\approx -62{,}99 + G - 20\log_{10}(d)$ dBm.
+2. Interpolar linearmente a correção na tabela 2 do APS011 (PRF 64 MHz,
+   −61 a −93 dBm em passos de 2 dB; fora da faixa, vale a extremidade).
+3. $d_{corrigida} = d_{medida} - \text{correção}$.
+
+| RSL (dBm) | −61 | −65 | −69 | −73 | **−77** | −81 | −85 | −89 | −93 |
+|-----------|-----|-----|-----|-----|---------|-----|-----|-----|-----|
+| Correção (cm) | −11,0 | −10,0 | −8,2 | −5,1 | **0,0** | +3,5 | +4,9 | +7,1 | +8,1 |
+
+| Distância medida | RSL | Distância corrigida |
+|------------------|-----|---------------------|
+| 1,000 m | −63,0 dBm | 1,105 m |
+| 5,000 m | −77,0 dBm | 5,000 m |
+| 10,000 m | −83,0 dBm | 9,958 m |
+
+**Por que Friis e não a potência medida pelo chip:** a estimativa do próprio
+DW1000 perde exatidão justamente com sinal forte, onde o viés é maior. O
+fabricante usa a distância medida.
+
+**Configuração:**
+
+| Símbolo Kconfig | Padrão | Efeito |
+|-----------------|--------|--------|
+| `CONFIG_RTLS_TWR_RANGE_BIAS_CORRECTION` | `y` | liga a correção |
+| `CONFIG_RTLS_TWR_RANGE_BIAS_GAIN_DB_X10` | 0 | ganho das antenas menos perdas (dB × 10) |
+
+> A tabela supõe o zero do viés em −77 dBm. Com G = 0, isso é **5,0 m**, a
+> distância de calibração. Com G ≠ 0, a distância de calibração passa a ser
+> 5,0 m × 10^(G/20). Como o ganho da antena da DWM1001 não foi caracterizado,
+> G = 0 é uma aproximação.
+
+**Limitações:** vale só em LOS (em NLOS o RSL real é menor que o previsto por
+Friis), só para canal 5 / PRF 64, e o viés residual da própria correção
+(~1 cm) não é modelado.
+
+**Saída:** a tag guarda as duas distâncias (`distance_m` corrigida e
+`distance_raw_m` bruta) e imprime as duas no CSV. A calibração usa a
+corrigida, que a 5 m é praticamente igual à bruta.
+
 ## 4. Multilateração por mínimos quadrados (inicialização e baseline)
 
 Dadas as âncoras $\mathbf a_i$ e as distâncias $d_i$, subtrai-se a equação da

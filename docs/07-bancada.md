@@ -75,8 +75,12 @@ west flash -d build/anchor_a1 --dev-id <serial ancora>
 A tag imprime uma linha CSV por distância:
 
 ```
-R,<round>,<t_ms>,<ancora>,<dist_mm>,<rx_power_cdbm>,<fp_power_cdbm>
+R,<round>,<t_ms>,<ancora>,<dist_mm>,<rx_power_cdbm>,<fp_power_cdbm>,<raw_mm>
 ```
+
+`dist_mm` já sai **corrigida** pelo viés de RSL (APS011) e `raw_mm` é o
+DS-TWR antes da correção. O `stats` mostra as duas médias (`média` e
+`bruta`). A calibração usa a corrigida; a 5 m as duas praticamente coincidem.
 
 Ela também imprime um resumo a cada 10 s. Para capturar 100 s (1000 medidas)
 e analisar, com o console fechado:

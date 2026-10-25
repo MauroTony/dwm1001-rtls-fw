@@ -189,6 +189,7 @@ de µs, bem abaixo do `T_reply` de 1 ms.
 | `CONFIG_RTLS_LOC_ACCEL_STD_MMS2` | lib/loc | 1000 | σ da aceleração do modelo (Q) |
 | `CONFIG_RTLS_LOC_GATE_CHI2_X100` | lib/loc | 663 | limiar do gating (χ² × 100) |
 | `CONFIG_RTLS_DW1000_TX_ANT_DLY` / `_RX_ANT_DLY` | drivers/dw1000 | 16436 | atrasos de antena (ticks) |
+| `CONFIG_RTLS_TWR_RANGE_BIAS_CORRECTION` / `_GAIN_DB_X10` | lib/twr | y / 0 | correção do viés por RSL (APS011) e ganho das antenas (dB × 10) |
 
 **Configuração por nó:** cada âncora usa um fragmento em `apps/anchor/nodes/`:
 

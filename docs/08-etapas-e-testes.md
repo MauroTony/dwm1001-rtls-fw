@@ -156,13 +156,14 @@ PER × distância (T1.3–T1.4), potência média × distância e temperatura am
 ### Implementação
 
 - [x] `lib/twr/`: initiator, responder, `twr_math`
-- [x] CSV `R,...` na tag; `tools/rtls_log.py` (`capture`, `stats`, `calib`, `calib3`)
+- [x] CSV `R,...` na tag com distância corrigida e bruta; `tools/rtls_log.py` (`capture`, `stats`, `calib`, `calib3`)
+- [x] correção do viés por RSL, tabela 2 do APS011 (`CONFIG_RTLS_TWR_RANGE_BIAS_CORRECTION=y`)
 
 ### Testes automatizados
 
 | ID | Comando | Esperado |
 |----|---------|----------|
-| T2.0 | `tests/unit` (ver T0.3) | `twr_math`: fórmula, wrap de 40 bits, ±20 ppm; `frames`: codec |
+| T2.0 | `tests/unit` (ver T0.3) | `twr_math`: fórmula, wrap de 40 bits, ±20 ppm, RSL por Friis, tabela de viés e distância corrigida; `frames`: codec |
 
 ### Roteiro de bancada
 
@@ -175,17 +176,17 @@ Detalhes em [07 §2](07-bancada.md#2-m2-ds-twr-11-e-calibração-de-antena).
 | T2.3 | Calibração com 3 placas a **5,0 m** (`calib3`), anotando a temperatura | valores `TX/RX_ANT_DLY` por placa |
 | T2.4 | Grave os valores (`nodes/aN.conf` e fragmento da tag) e meça 1000 vezes a 1, 3 e 5 m | ver critério |
 | T2.5 | Desligue e religue tudo; repita 5 m | viés muda menos de ~1 cm (repetibilidade) |
+| T2.6 | No T2.4 a 1 m, compare as colunas `média` e `bruta` do `stats` | bruta ~10 cm abaixo da real; média (corrigida) dentro de ±10 cm |
 
-> [!WARNING]
-> **Ponto em aberto a 1 m:** pelo APS011, o viés dependente da potência a 1 m
-> no canal 5 é ~−10,5 cm. Ele pode estourar o critério de ±10 cm mesmo com o
-> hardware correto. As opções são aplicar a correção por RSL já no M2 ou
-> ajustar o critério a 1 m. Decisão pendente; ver a fundamentação do TCC,
-> calibração §5.
+> [!NOTE]
+> **Correção por RSL ligada no M2** (decisão de 25/10/2026). Sem ela, o viés
+> dependente da potência a 1 m (~−10,5 cm, APS011) estouraria o critério de
+> ±10 cm mesmo com o hardware correto. O critério continua ±10 cm a 1, 3 e
+> 5 m. Algoritmo em [04-algoritmos.md §3.1](04-algoritmos.md#31-correção-do-viés-dependente-do-rsl-aps011).
 
 ### Critério de aceite
 
-- [ ] |viés| ≤ 10 cm e desvio ≤ 5 cm a 1, 3 e 5 m (1000 medidas cada)
+- [ ] |viés| ≤ 10 cm e desvio ≤ 5 cm a 1, 3 e 5 m (1000 medidas cada), com a correção por RSL ligada
 - [ ] atrasos de antena gravados para todas as placas do M3
 
 ### Registrar
@@ -379,7 +380,7 @@ avaliado para o TCC.
 
 - [ ] `settings` + NVS + shell: ID, posição da âncora, atrasos de antena
 - [ ] watchdog
-- [ ] indicador de NLOS ($P_{RX} - P_{FP}$) e correção do viés por RSL (opcional)
+- [ ] indicador de NLOS ($P_{RX} - P_{FP}$)
 
 ### Roteiro de bancada
 
@@ -406,7 +407,6 @@ Dependem de decisão do usuário antes de entrar no plano.
 |----------|---------|------------------|
 | SS-TWR nível 1: calcular SS (bruto e corrigido pelo integrador de portadora) na mesma rodada do DS | baixo | comparação pareada de precisão SS × DS |
 | SS-TWR nível 2: modo SS real, comutável em tempo real pelo POLL | médio | comparação de tempo de rodada e capacidade |
-| Correção do viés por RSL já no M2 | baixo | resolve o ponto em aberto a 1 m |
 | `tools/rtls_log.py --reference` (Δ = 2b contra placa calibrada) | baixo | calibração em série das demais placas |
 | CI no GitHub Actions (build + `native_sim`) | baixo | testes unitários executados a cada push |
 | GPIO de debug para o analisador lógico | baixo | mede latências (T5.2, T6.6) com instrumento |
