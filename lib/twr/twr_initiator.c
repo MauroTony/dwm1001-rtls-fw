@@ -33,6 +33,16 @@ static struct rtls_twr_initiator_cfg initiator_cfg;
 static struct rtls_twr_initiator_stats initiator_stats;
 static uint8_t round_seq;
 
+/* Viés dependente do RSL (APS011), docs/04-algoritmos.md seção 3.1. */
+static float correct_bias(float distance_m)
+{
+#if defined(CONFIG_RTLS_TWR_RANGE_BIAS_CORRECTION)
+	return rtls_twr_correct_range(distance_m, CONFIG_RTLS_TWR_RANGE_BIAS_GAIN_DB_X10 / 10.0f);
+#else
+	return distance_m;
+#endif
+}
+
 static int anchor_index(uint16_t anchor_id)
 {
 	for (int i = 0; i < initiator_cfg.n_anchors; i++) {
@@ -130,7 +140,8 @@ static void collect_reports(struct resp_slot resp[], uint8_t n, int expected, ui
 
 		range = &out->ranges[out->count++];
 		range->anchor_id = hdr.src;
-		range->distance_m = distance;
+		range->distance_raw_m = distance;
+		range->distance_m = correct_bias(distance);
 		range->rx_power_cdbm = resp[idx].rx_power_cdbm;
 		range->fp_power_cdbm = msg.fp_power_cdbm;
 		for (int k = 0; k < 3; k++) {

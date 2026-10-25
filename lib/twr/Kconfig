@@ -34,6 +34,27 @@ config RTLS_TWR_RX_MARGIN_US
 	default 500
 	range 0 5000
 
+config RTLS_TWR_RANGE_BIAS_CORRECTION
+	bool "Corrige o viés de distância dependente do nível de sinal (APS011)"
+	default y
+	help
+	  Estima o RSL pela equação de Friis a partir da distância medida
+	  (LOS, canal 5) e subtrai a correção interpolada da tabela 2 do
+	  APS011 para PRF de 64 MHz. A tabela supõe a calibração de antena
+	  feita onde o viés é zero (-77 dBm): 5,0 m com ganho total de 0 dB.
+
+config RTLS_TWR_RANGE_BIAS_GAIN_DB_X10
+	int "Ganho das antenas menos perdas, para o cálculo do RSL (dB x 10)"
+	default 0
+	range -200 200
+	depends on RTLS_TWR_RANGE_BIAS_CORRECTION
+	help
+	  Soma dos ganhos das antenas de TX e RX menos as perdas de PCB, em
+	  décimos de dB. 0 trata as antenas como isotrópicas sem perdas
+	  (aproximação: o ganho da antena da DWM1001 não foi caracterizado).
+	  Se mudar este valor, a distância de calibração passa a ser
+	  5,0 m x 10^(G/20).
+
 module = RTLS_TWR
 module-str = rtls_twr
 source "subsys/logging/Kconfig.template.log_config"

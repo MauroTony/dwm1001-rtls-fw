@@ -75,8 +75,9 @@ static void print_ranges(const struct rtls_range_set *set)
 	for (int i = 0; i < set->count; i++) {
 		const struct rtls_range *r = &set->ranges[i];
 
-		printk("R,%u,%u,%04x,%d,%d,%d\n", set->round, (uint32_t)set->t_ms, r->anchor_id,
-		       m_to_mm(r->distance_m), r->rx_power_cdbm, r->fp_power_cdbm);
+		printk("R,%u,%u,%04x,%d,%d,%d,%d\n", set->round, (uint32_t)set->t_ms, r->anchor_id,
+		       m_to_mm(r->distance_m), r->rx_power_cdbm, r->fp_power_cdbm,
+		       m_to_mm(r->distance_raw_m));
 	}
 }
 

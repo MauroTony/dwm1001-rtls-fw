@@ -80,6 +80,31 @@ double rtls_twr_ds_tof(const struct rtls_twr_intervals *iv);
 /** Converte ToF (ticks) em distância (m). */
 double rtls_twr_tof_to_m(double tof_ticks);
 
+/*
+ * Correção do viés de distância dependente do nível de sinal recebido (RSL),
+ * conforme a nota APS011 v1.2 da Qorvo, seção 3 (docs/04-algoritmos.md, seção 3.1).
+ * Válida para o canal 5 com PRF de 64 MHz e banda de 500 MHz.
+ */
+
+/**
+ * RSL estimado pela equação de Friis em LOS a partir da distância medida:
+ *   P_R = P_T + G + 20 log10(c) - 20 log10(4 pi f_c R),  P_T = -14,3 dBm
+ *
+ * @param distance_m distância medida (m); valores < 1 cm são tratados como 1 cm
+ * @param gain_db    soma dos ganhos das antenas menos perdas (dB)
+ */
+float rtls_twr_rsl_dbm(float distance_m, float gain_db);
+
+/**
+ * Correção do viés (m) para um RSL, interpolada linearmente na tabela 2 do
+ * APS011 (de -61 a -93 dBm; fora disso, o valor da extremidade).
+ * A distância real é d_medida - correção.
+ */
+float rtls_twr_range_bias_m(float rsl_dbm);
+
+/** Distância corrigida: d - rtls_twr_range_bias_m(rtls_twr_rsl_dbm(d, gain_db)). */
+float rtls_twr_correct_range(float distance_m, float gain_db);
+
 #ifdef __cplusplus
 }
 #endif

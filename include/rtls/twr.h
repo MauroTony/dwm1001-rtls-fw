@@ -22,7 +22,8 @@ extern "C" {
 struct rtls_range {
 	uint16_t anchor_id;
 	int32_t anchor_pos_mm[3]; /**< posição informada pela âncora no REPORT */
-	float distance_m;
+	float distance_m;         /**< distância final (corrigida, se habilitado) */
+	float distance_raw_m;     /**< DS-TWR antes da correção de viés por RSL */
 	int16_t rx_power_cdbm;    /**< potência do RESP recebido na tag */
 	int16_t fp_power_cdbm;    /**< potência do 1º caminho do FINAL na âncora */
 };

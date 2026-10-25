@@ -95,4 +95,43 @@ ZTEST(twr_math, test_slot_time_wraps_at_40_bits)
 	zassert_equal(rtls_twr_slot_ts(0, 1000, 1000, 0), 63897600ULL);
 }
 
+/*
+ * Correção de viés por RSL (APS011). Valores esperados calculados à mão:
+ * RSL(d) = -14,3 + 169,5362 - 218,2284 - 20 log10(d) = -62,992 - 20 log10(d).
+ */
+ZTEST(twr_math, test_rsl_by_friis_channel_5)
+{
+	zassert_within(rtls_twr_rsl_dbm(1.0f, 0.0f), -62.99f, 0.02f);
+	zassert_within(rtls_twr_rsl_dbm(5.0f, 0.0f), -76.97f, 0.02f);
+	zassert_within(rtls_twr_rsl_dbm(10.0f, 0.0f), -82.99f, 0.02f);
+	/* Ganho soma direto no RSL. */
+	zassert_within(rtls_twr_rsl_dbm(5.0f, 3.0f), -73.97f, 0.02f);
+	/* Distância nula ou negativa não gera NaN. */
+	zassert_true(rtls_twr_rsl_dbm(0.0f, 0.0f) > -30.0f);
+	zassert_true(rtls_twr_rsl_dbm(-1.0f, 0.0f) > -30.0f);
+}
+
+ZTEST(twr_math, test_bias_table_points_and_interpolation)
+{
+	/* Pontos da tabela 2 (PRF 64 MHz). */
+	zassert_within(rtls_twr_range_bias_m(-61.0f), -0.110f, 1e-5f);
+	zassert_within(rtls_twr_range_bias_m(-77.0f), 0.0f, 1e-5f);
+	zassert_within(rtls_twr_range_bias_m(-93.0f), 0.081f, 1e-5f);
+	/* Interpolação linear entre -61 (-11,0 cm) e -63 (-10,5 cm). */
+	zassert_within(rtls_twr_range_bias_m(-62.0f), -0.1075f, 1e-5f);
+	/* Fora da tabela: valor da extremidade. */
+	zassert_within(rtls_twr_range_bias_m(-40.0f), -0.110f, 1e-5f);
+	zassert_within(rtls_twr_range_bias_m(-110.0f), 0.081f, 1e-5f);
+}
+
+ZTEST(twr_math, test_corrected_range)
+{
+	/* 1 m: RSL -62,99 dBm, viés -10,50 cm -> a distância real é maior. */
+	zassert_within(rtls_twr_correct_range(1.0f, 0.0f), 1.1050f, 0.0005f);
+	/* 5 m: ponto de calibração, correção praticamente nula. */
+	zassert_within(rtls_twr_correct_range(5.0f, 0.0f), 5.0004f, 0.0005f);
+	/* 10 m: RSL -82,99 dBm, viés +4,20 cm -> a distância real é menor. */
+	zassert_within(rtls_twr_correct_range(10.0f, 0.0f), 9.9580f, 0.0005f);
+}
+
 ZTEST_SUITE(twr_math, NULL, NULL, NULL, NULL, NULL);
