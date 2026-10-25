@@ -144,6 +144,36 @@ colisões persistentes.
 - Capacidade: **8 tags a 10 Hz** (ou 16 tags a 5 Hz com o mesmo superquadro
   dobrado).
 
+### 5.3 De onde vem o limite de 8 tags e como subir
+
+O slot de 12 ms é a rodada DS-TWR mais o EKF, o POSITION e uma guarda:
+
+```
+T_rodada   = 2·T_reply + (2N − 1)·T_slot + T_ar(REPORT)  = 2 + 7 + 0,2 = 9,2 ms
+T_slot,tag = T_rodada + T_EKF + T_ar(POSITION) + guarda   ≈ 12 ms
+N_tags     = ⌊(100 − 4) / 12⌋ = 8
+```
+
+O limite vem dos tempos **conservadores** de 1 ms (`CONFIG_RTLS_TWR_REPLY_DELAY_US`
+e `CONFIG_RTLS_TWR_SLOT_US`), escolhidos antes de medir a latência real. As
+estimativas abaixo ainda precisam ser confirmadas em bancada:
+
+| Cenário | T_reply = T_slot | Slot por tag | Tags a 10 Hz |
+|---------|------------------|--------------|--------------|
+| Atual | 1,0 ms | 12 ms | 8 |
+| Tempos apertados após medir no M3 | 0,5 ms | ~6,5 ms | 14 |
+| + posição no POLL seguinte, EKF fora do slot | 0,5 ms | ~5,5 ms | 17 |
+
+**Referência, PANS da Decawave** (*DWM1001 System Overview* v2.1): 15 slots
+TWR por superquadro de 100 ms, ou seja, 15 tags a 10 Hz. O PANS usa SS-TWR
+(Group Poll + 4 Responses, com os timestamps da âncora dentro do Response), e
+o desvio de relógio é compensado por uma rede de âncoras sincronizadas. Ele
+também envia a posição nos campos X, Y, Z do Group Poll seguinte. A análise
+completa está na fundamentação do TCC.
+
+**Restrição regulatória:** a potência *smart* do DW1000 vale com no máximo um
+quadro por ms por nó (APS017). Os cenários acima respeitam isso.
+
 ## 6. Erros e recuperação
 
 | Situação | Comportamento |

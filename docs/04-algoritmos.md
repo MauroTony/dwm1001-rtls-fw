@@ -78,8 +78,9 @@ $$
 total da placa X, dividindo igualmente entre TX e RX. O procedimento é o do
 Decawave APS014:
 
-1. Distância de 3–5 m, LOS, placas na mesma altura, antenas na mesma
-   orientação.
+1. Distância de **5,0 m** (zero do viés por potência no canal 5 / PRF 64,
+   APS011 tab. 3), LOS, placas na mesma altura, antenas na mesma orientação.
+   Anote a temperatura (2,15 mm/°C por placa, APS014).
 2. Coletar pelo menos 1000 medidas por par.
 3. Calcular $\Delta\delta$ e regravar os atrasos: Kconfig
    `CONFIG_RTLS_DW1000_{TX,RX}_ANT_DLY` até o M7, `settings` a partir do M8.

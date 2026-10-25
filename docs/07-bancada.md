@@ -81,16 +81,21 @@ Ela também imprime um resumo a cada 10 s. Para capturar 100 s (1000 medidas)
 e analisar, com o console fechado:
 
 ```bash
-python tools/rtls_log.py capture --port COM5 --out m2_3m.csv --seconds 100
-python tools/rtls_log.py stats m2_3m.csv --true-distance 3.0
+python tools/rtls_log.py capture --port COM5 --out m2_5m.csv --seconds 100
+python tools/rtls_log.py stats m2_5m.csv --true-distance 5.0
 ```
 
 ### 2.2 Calibrar (Decawave APS014; teoria em [04-algoritmos.md §3](04-algoritmos.md#3-calibração-do-atraso-de-antena))
 
+> **Calibre a 5,0 m.** Para canal 5 com PRF 64 MHz, o viés dependente da
+> potência é zero em −77 dBm, o que corresponde a 5,0 m (APS011, tabela 3).
+> Calibrar ali põe o zero no meio da faixa de variação do viés. **Anote a
+> temperatura**: o atraso varia 2,15 mm/°C por placa (APS014).
+
 **Par de placas iguais** (rápido, assume atrasos iguais):
 
 ```bash
-python tools/rtls_log.py calib m2_3m.csv --true-distance 3.0
+python tools/rtls_log.py calib m2_5m.csv --true-distance 5.0
 # ambas: delta +10.0 ticks -> CONFIG_RTLS_DW1000_TX_ANT_DLY=16441  CONFIG_RTLS_DW1000_RX_ANT_DLY=16441
 ```
 
@@ -103,7 +108,7 @@ python tools/rtls_log.py calib m2_3m.csv --true-distance 3.0
 3. Rode:
 
 ```bash
-python tools/rtls_log.py calib3 --true-distance 3.0 --ab ab.csv --ac ac.csv --bc bc.csv
+python tools/rtls_log.py calib3 --true-distance 5.0 --ab ab.csv --ac ac.csv --bc bc.csv
 ```
 
 Coloque os valores de cada placa no fragmento de configuração dela. Para

@@ -74,7 +74,7 @@ da tag até o host. Recursos fora desse caminho ficam para depois (seção 2.2).
 | RNF-01 | Taxa de atualização por tag | 10 Hz (período 100 ms ± 1 ms) |
 | RNF-02 | Precisão (LOS, estático, 2D) | erro RMS ≤ 15 cm |
 | RNF-03 | Latência medição → host | ≤ 50 ms |
-| RNF-04 | Escalabilidade | ≥ 4 tags a 10 Hz (meta: 8) |
+| RNF-04 | Escalabilidade | ≥ 4 tags a 10 Hz (meta: 8; caminho para ≥ 15 em [03 §5.3](03-protocolo-uwb.md#53-de-onde-vem-o-limite-de-8-tags-e-como-subir)) |
 | RNF-05 | Entrega de posições no gateway | ≥ 99 % (1 tag, LOS, 10 min) |
 | RNF-06 | Reprodutibilidade | versões fixadas (Zephyr v4.4.0, SDK 1.0.1); build idêntico em Windows e Linux |
 | RNF-07 | Testabilidade | algoritmos (TWR, localização, codec) sem dependência de hardware e testáveis em `native_sim` |
