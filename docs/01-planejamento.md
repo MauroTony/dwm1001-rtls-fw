@@ -14,6 +14,7 @@ detalhes ficam nos documentos irmãos:
 | [06-configuracao-ambiente.md](06-configuracao-ambiente.md) | Setup do ambiente (Windows/Linux), build, gravação |
 | [07-bancada.md](07-bancada.md) | Detalhes da bancada do M1 ao M3 |
 | [08-etapas-e-testes.md](08-etapas-e-testes.md) | Etapas M0–M8 com roteiro de teste e critério de aceite |
+| [09-guia-do-codigo.md](09-guia-do-codigo.md) | Mapa do código implementado, Zephyr e parâmetros editáveis |
 
 ---
 

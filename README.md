@@ -65,6 +65,7 @@ Guia completo, com passo a passo manual e solução de problemas:
 | [06-configuracao-ambiente](docs/06-configuracao-ambiente.md) | Setup Windows/Linux, build, gravação, debug |
 | [07-bancada](docs/07-bancada.md) | Roteiro de validação em hardware do M1 ao M3, calibração de antena |
 | [08-etapas-e-testes](docs/08-etapas-e-testes.md) | Todas as etapas (M0–M8) com testes automatizados, roteiro de bancada e critério de aceite |
+| [09-guia-do-codigo](docs/09-guia-do-codigo.md) | **Guia vivo do código**: arquitetura com diagramas, cada componente, Zephyr no projeto e todos os parâmetros editáveis |
 
 ## Estrutura
 

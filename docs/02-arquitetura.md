@@ -1,5 +1,9 @@
 # 02 — Arquitetura
 
+> Este documento descreve o **desenho** do sistema. O mapa do que já está
+> implementado (componentes, quem chama quem, Zephyr e parâmetros) está em
+> [09-guia-do-codigo.md](09-guia-do-codigo.md).
+
 ## 1. Hardware: DWM1001-DEV
 
 | Recurso | Detalhe |

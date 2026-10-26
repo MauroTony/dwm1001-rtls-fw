@@ -1,0 +1,680 @@
+# 09 — Guia do código implementado
+
+> **Documento vivo.** Mapa de tudo que existe no código hoje: onde está, o
+> que faz, para que serve e quem usa. Ele é atualizado a cada implementação
+> (regra no `CLAUDE.md`). O porquê das decisões está em
+> [01-planejamento.md](01-planejamento.md) e o desenho de alto nível em
+> [02-arquitetura.md](02-arquitetura.md).
+
+**Legenda** (texto e cores dos diagramas):
+
+| Marca | Cor | Significado |
+|-------|-----|-------------|
+| ✅ | verde | implementado e coberto por testes unitários |
+| 🧪 | amarelo | implementado e compilando; depende de validação em bancada |
+| 📐 | cinza tracejado | API pronta, implementação pendente (retorna `-ENOSYS`) |
+| — | azul | externo ao projeto (Zephyr, hardware) |
+
+Os diagramas usam **Mermaid**. Eles renderizam no GitHub, no VS Code, no
+Obsidian e no CLion (com a extensão Mermaid ativada nas configurações de
+Markdown), e ficam versionados como texto junto com o código.
+
+**Seções:**
+[1 Arquitetura geral](#1-arquitetura-geral) ·
+[2 Componentes](#2-componentes) ·
+[3 Zephyr no projeto](#3-zephyr-no-projeto) ·
+[4 Parâmetros editáveis](#4-parâmetros-editáveis) ·
+[5 Manutenção deste documento](#5-manutenção-deste-documento)
+
+---
+
+## 1. Arquitetura geral
+
+### 1.1 O sistema em funcionamento
+
+```mermaid
+flowchart LR
+    subgraph area["Área monitorada"]
+        A["4 × Âncora<br/>apps/anchor<br/>responder DS-TWR 🧪"]:::bench
+        T["Tag<br/>apps/tag<br/>initiator DS-TWR 🧪<br/>EKF 📐"]:::bench
+    end
+    G["Gateway<br/>apps/gateway<br/>RX + tabela 🧪<br/>SPI escravo 📐"]:::bench
+    H["Host<br/>fora deste repositório"]:::ext
+    T <-- "POLL · RESP · FINAL · REPORT" --> A
+    T -. "POSITION (após o M4)" .-> G
+    G -. "SPI TLV (M6)" .-> H
+    classDef bench fill:#fff3cd,stroke:#b8860b,color:#111
+    classDef ext fill:#e3f2fd,stroke:#1565c0,color:#111
+```
+
+**Hoje, de ponta a ponta:**
+1. A tag mede a distância até as 4 âncoras a 10 Hz e corrige o viés por RSL.
+2. Ela imprime as distâncias em CSV.
+3. A posição (M4) e o envio ao host (M6) ainda não existem.
+
+### 1.2 Camadas do firmware
+
+```mermaid
+flowchart TB
+    subgraph APPS["apps/ (firmwares)"]
+        tag["tag<br/>main.c 🧪"]:::bench
+        anchor["anchor<br/>main.c 🧪"]:::bench
+        gw["gateway<br/>main.c + tag_table.c 🧪"]:::bench
+    end
+    subgraph LIB["lib/ (serviços)"]
+        twr["twr<br/>initiator · responder · common 🧪"]:::bench
+        math["twr_math<br/>DS-TWR · RSL · tempos ✅"]:::ok
+        proto["proto<br/>frames.c ✅"]:::ok
+        loc["loc<br/>EKF 📐"]:::stub
+        hif["host_if<br/>SPIS + DRDY 📐"]:::stub
+        led["common<br/>status_led.c 🧪"]:::bench
+    end
+    drv["drivers/dw1000<br/>dw1000.c 🧪"]:::bench
+    zep["Zephyr v4.4.0<br/>kernel · SPI · GPIO · log"]:::ext
+    hw["nRF52832 + DW1000"]:::ext
+    tag --> twr & loc & proto & led & drv
+    anchor --> twr & led & drv
+    gw --> proto & hif & led & drv
+    twr --> math & proto & drv
+    drv & hif & led --> zep --> hw
+    classDef ok fill:#d4edda,stroke:#2e7d32,color:#111
+    classDef bench fill:#fff3cd,stroke:#b8860b,color:#111
+    classDef stub fill:#eceff1,stroke:#78909c,color:#111,stroke-dasharray:4 3
+    classDef ext fill:#e3f2fd,stroke:#1565c0,color:#111
+```
+
+**Regras que o código segue:**
+
+| Regra | Onde se vê |
+|-------|-----------|
+| `twr_math`, `proto` e `loc` não tocam hardware | compilam em `native_sim` (`tests/unit`) |
+| Só `drivers/dw1000` acessa o rádio | as outras camadas chamam `dw1000_transmit()` / `dw1000_receive()` |
+| Um único dono do rádio por firmware | a thread `main` de cada app |
+| As bibliotecas recebem IDs e parâmetros por argumento | `struct rtls_twr_*_cfg` montada pelo app |
+
+### 1.3 Onde está cada parte
+
+```mermaid
+flowchart TB
+    subgraph FW["Firmware gravado na placa"]
+        direction LR
+        apps["apps/<br/>tag · anchor · gateway"] --- smp["samples/<br/>uwb_pingpong"]
+    end
+    subgraph SH["Código compartilhado (módulo Zephyr)"]
+        direction LR
+        lib["lib/<br/>twr · proto · loc<br/>host_if · common"] --- drv["drivers/<br/>dw1000"] --- inc["include/rtls/<br/>APIs .h"]
+    end
+    subgraph QA["Qualidade e bancada"]
+        direction LR
+        tst["tests/unit/"] --- tools["tools/<br/>rtls_log.py"] --- scr["scripts/<br/>setup · env · list-boards"]
+    end
+    subgraph CF["Build e documentação"]
+        direction LR
+        cfg["west.yml · zephyr/module.yml<br/>CMakeLists.txt · Kconfig"] --- docs["docs/ 01–09"]
+    end
+    FW -- usa --> SH
+    QA -. testa .-> SH
+    CF -. configura .-> FW
+```
+
+| Caminho | Conteúdo | Situação |
+|---------|----------|----------|
+| [`apps/tag`](../apps/tag) | laço de 10 Hz: DS-TWR → CSV → (EKF) → (POSITION) | 🧪 |
+| [`apps/anchor`](../apps/anchor) | responder DS-TWR; `nodes/a1..a4.conf` por âncora | 🧪 |
+| [`apps/gateway`](../apps/gateway) | RX de POSITION, tabela de tags, publicação ao host | 🧪 (host 📐) |
+| [`drivers/dw1000`](../drivers/dw1000) | driver próprio do DW1000 + mapa de registradores | 🧪 |
+| [`lib/twr`](../lib/twr) | motor DS-TWR e matemática | 🧪 / ✅ |
+| [`lib/proto`](../lib/proto) | montagem e validação de quadros | ✅ |
+| [`lib/loc`](../lib/loc) | configuração do EKF; algoritmo pendente | 📐 |
+| [`lib/host_if`](../lib/host_if) | init do SPI escravo e do DRDY; protocolo pendente | 📐 |
+| [`lib/common`](../lib/common) | LEDs de status | 🧪 |
+| [`include/rtls`](../include/rtls) | headers públicos de todas as bibliotecas | — |
+| [`samples/uwb_pingpong`](../samples/uwb_pingpong) | bancada do driver (M1) | 🧪 |
+| [`tests/unit`](../tests/unit) | 15 testes ztest | ✅ |
+| [`tools/rtls_log.py`](../tools/rtls_log.py) | captura CSV, estatística, calibração de antena | ✅ |
+| [`scripts/`](../scripts) | setup Windows/Linux, ativação, lista de placas | ✅ |
+
+### 1.4 O que entra em cada firmware
+
+| Módulo | tag | anchor | gateway | ping-pong | testes |
+|--------|:---:|:------:|:-------:|:---------:|:------:|
+| `drivers/dw1000` | ● | ● | ● | ● | |
+| `lib/twr` (motor) | ● | ● | | | |
+| `lib/twr` (`twr_math`) | ● | ● | | ● | ● |
+| `lib/proto` | ● | ● | ● | ● | ● |
+| `lib/loc` | ● | | | | |
+| `lib/host_if` | | | ● | | |
+| `lib/common` (LEDs) | ● | ● | ● | ● | |
+
+A seleção vem do `prj.conf` de cada app (seção [3.5](#35-kconfig-ligando-e-configurando-módulos)).
+
+---
+
+## 2. Componentes
+
+### 2.1 Driver DW1000 · `drivers/dw1000/` 🧪
+
+**O que faz:** inicializa o transceptor, configura a PHY, envia e recebe
+quadros e entrega timestamps de 40 bits (15,65 ps).
+**Por que existe:** o driver do Zephyr entrega timestamps em ns (≈ 30 cm de
+erro), inviável para TWR.
+
+#### Inicialização (`dw1000_init()` + `dw1000_configure()`)
+
+```mermaid
+flowchart LR
+    subgraph S1["1 · Reset e identificação"]
+        direction TB
+        r["Pulso em RSTn<br/>(P0.24)"] --> id1["DEV_ID a 2 MHz<br/>= 0xDECA0130?"]
+    end
+    subgraph S2["2 · Relógios e calibração de fábrica"]
+        direction TB
+        xti["Relógio XTI<br/>19,2 MHz"] --> otp["OTP: LDO, part ID,<br/>atraso, XTAL trim"] --> lde["Microcódigo LDE"] --> pll["Relógios automáticos<br/>confere CPLOCK"]
+    end
+    subgraph S3["3 · Operação"]
+        direction TB
+        fast["SPI a 8 MHz<br/>relê DEV_ID"] --> irq["IRQ P0.19 → semáforo<br/>SYS_MASK = TXFRS · RXFCG"] --> ant["Atrasos de antena<br/>(Kconfig)"]
+    end
+    cfg["dw1000_configure()<br/>canal 5 · PRF 64 · 128 · 6,8 Mbps<br/>filtro · PAN · endereço"]
+    S1 --> S2 --> S3 --> cfg
+```
+
+#### Modelo de eventos
+
+```mermaid
+sequenceDiagram
+    participant App as Thread main
+    participant Drv as dw1000.c
+    participant ISR as ISR do GPIO
+    participant DW as DW1000
+    App->>Drv: dw1000_receive(timeout)
+    Drv->>DW: liga RX, lê SYS_STATUS
+    Drv->>Drv: k_sem_take()
+    DW-->>ISR: IRQ (quadro bom)
+    ISR->>Drv: k_sem_give()
+    Drv->>DW: SPI: tamanho, dados, timestamp, potência
+    Drv-->>App: len + dw1000_rx_info
+```
+
+#### API
+
+| Função | O que faz | Quem usa |
+|--------|-----------|----------|
+| `dw1000_init()` | reset, OTP, LDE, PLL, IRQ, atrasos de antena | `main()` de todos os apps e do ping-pong |
+| `dw1000_configure()` | registradores de ajuste da PHY, filtro, PAN e endereço | idem |
+| `dw1000_transmit()` | TX imediato ou atrasado, com RX automático opcional; `-ETIME` se tarde demais | `twr_send()`, `send_position()` (tag), ping-pong |
+| `dw1000_receive()` | liga o RX e espera um quadro bom ou o prazo; preenche timestamp e potência | `twr_recv()`, laço do gateway, ping-pong |
+| `dw1000_idle()` | TRXOFF e limpeza de eventos | fim de cada rodada (tag e âncora), ping |
+| `dw1000_set_antenna_delay()` | grava `TX_ANTD` / `RX_ANTD` | `dw1000_init()` |
+| `dw1000_get_stats()` | contadores (TX ok/tarde, RX ok/timeout) | pong (ping-pong) |
+| `dw1000_sys_time()`, `dw1000_read_dev_id()` | relógio de 40 bits; diagnóstico | reservado / init |
+
+**Estruturas:** `dw1000_phy_config` (só `DW1000_PHY_CONFIG_DEFAULT` é aceita),
+`dw1000_tx_opts` (`delayed_ts`, `rx_after_tx`, `rx_delay_uus`),
+`dw1000_rx_info` (`rx_ts`, `rx_power_cdbm`, `fp_power_cdbm`).
+Registradores em [`dw1000_regs.h`](../drivers/dw1000/dw1000_regs.h).
+
+---
+
+### 2.2 Quadros do protocolo · `lib/proto/` + `include/rtls/frames.h` ✅
+
+**O que faz:** define o formato no ar (cabeçalho IEEE 802.15.4 + mensagens
+RTLS), monta e valida quadros.
+**Por que existe:** um único lugar para o protocolo, testável sem hardware.
+
+| Cabeçalho MAC (9 B) | Carga RTLS | FCS (2 B) |
+|---------------------|------------|-----------|
+| FC `0x8841` · seq · PAN · destino · origem | tipo (1 B) + campos | gerado pelo DW1000 |
+
+| Mensagem | Tipo | Bytes | Quem envia → quem recebe | Código |
+|----------|------|-------|--------------------------|--------|
+| POLL | `0x20` | 11 | tag → âncoras | `twr_initiator.c` → `twr_responder.c` |
+| RESP | `0x21` | 2 | âncora → tag | `twr_responder.c` → `twr_initiator.c` |
+| FINAL | `0x22` | 2 | tag → âncoras | idem POLL |
+| REPORT | `0x23` | 24 | âncora → tag | idem RESP |
+| POSITION | `0x30` | 26 | tag → gateway | `send_position()` → `handle_frame()` |
+| BEACON | `0x10` | 6 | gateway → todos | só definido (M7) |
+| PING | `0xF0` | 5 | ping ↔ pong | `samples/uwb_pingpong` |
+
+| Função | O que faz | Quem usa |
+|--------|-----------|----------|
+| `rtls_mac_hdr_init()` | preenche o cabeçalho MAC | `twr_send()`, tag, ping-pong |
+| `rtls_frame_build()` | cabeçalho + carga → buffer | idem |
+| `rtls_frame_parse()` | valida FC, PAN e tamanho; retorna o tipo | `twr_recv()`, gateway, ping-pong |
+| `rtls_msg_size()` | tamanho da carga por tipo | `rtls_frame_parse()` |
+
+---
+
+### 2.3 Matemática do DS-TWR e correção de viés · `lib/twr/twr_math.c` ✅
+
+**O que faz:** transforma timestamps em distância corrigida.
+**Por que existe:** isolar a física e a matemática para testá-las em PC.
+
+```mermaid
+flowchart LR
+    ts["Timestamps 40 bits<br/>poll_tx · resp_rx · final_tx (tag)<br/>reply_b · round_b (REPORT)"] --> iv["rtls_twr_tag_intervals()<br/>Ra · Da · Rb · Db"]
+    iv --> tof["rtls_twr_ds_tof()<br/>ToF em ticks"]
+    tof --> m["rtls_twr_tof_to_m()<br/>distância bruta"]
+    m --> rsl["rtls_twr_rsl_dbm()<br/>RSL por Friis"]
+    rsl --> b["rtls_twr_range_bias_m()<br/>tabela 2 do APS011"]
+    b --> c["distância corrigida"]
+    m -. "rtls_twr_correct_range() faz os três últimos passos" .-> c
+```
+
+| Função | O que faz | Quem usa |
+|--------|-----------|----------|
+| `rtls_dw_ts_diff()` | diferença módulo 2⁴⁰ | initiator, responder |
+| `rtls_twr_tag_intervals()` | monta Ra, Da, Rb, Db | initiator |
+| `rtls_twr_ds_tof()` | estimador assimétrico $(R_aR_b - D_aD_b)/(R_a+R_b+D_a+D_b)$ | initiator |
+| `rtls_twr_tof_to_m()` | ticks → metros ($c_{ar}$) | initiator |
+| `rtls_us_to_dw_ticks()`, `rtls_us_to_uus()` | conversões de tempo | initiator, responder, ping-pong |
+| `rtls_twr_slot_ts()` | instante de TX de um slot | responder (RESP/REPORT), initiator (FINAL), pong |
+| `rtls_twr_rsl_dbm()` | RSL por Friis, canal 5 | `rtls_twr_correct_range()` |
+| `rtls_twr_range_bias_m()` | interpolação da tabela do APS011 | idem |
+| `rtls_twr_correct_range()` | distância corrigida | `correct_bias()` no initiator |
+
+Teoria: [04-algoritmos.md](04-algoritmos.md) §2 e §3.1.
+
+---
+
+### 2.4 Motor DS-TWR · `lib/twr/twr_{initiator,responder,common}.c` 🧪
+
+**O que faz:** executa a troca POLL → RESP → FINAL → REPORT e produz um
+`rtls_range_set` por rodada.
+**Por que existe:** separar o protocolo de ranging do laço de cada app.
+
+```mermaid
+sequenceDiagram
+    participant T as Tag · initiator
+    participant A as Âncora i · responder
+    Note over T: rtls_twr_initiator_run_round()
+    T->>A: twr_send(POLL) · W4R
+    Note over A: twr_recv(POLL) → respond()
+    A->>T: twr_send(RESP) atrasado em poll_rx + T_reply + i·T_slot
+    Note over T: collect_responses() até o meio do slot do FINAL
+    T->>A: twr_send(FINAL) atrasado em poll_tx + T_reply + N·T_slot
+    A->>T: twr_send(REPORT: Db, Rb, posição) em final_rx + T_reply + i·T_slot
+    Note over T: collect_reports() → twr_math → correct_bias()
+    Note over T,A: dw1000_idle() nos dois lados
+```
+
+| Arquivo / função | O que faz | Quem usa |
+|------------------|-----------|----------|
+| `twr_common.c`: `twr_send()` | monta o quadro e chama `dw1000_transmit()` | initiator, responder |
+| `twr_common.c`: `twr_recv()` | recebe até chegar o tipo esperado ou vencer o prazo | initiator, responder |
+| `rtls_twr_initiator_init()` / `_run_round()` | configuração e rodada completa da tag | `apps/tag` |
+| `rtls_twr_initiator_get_stats()` | rodadas, % completas, tempo da rodada, TX atrasado, por âncora | resumo de 10 s da tag |
+| `rtls_twr_responder_init()` / `_run()` | laço infinito da âncora | `apps/anchor` |
+| `rtls_twr_responder_get_stats()` | POLL, RESP, FINAL, REPORT, timeouts | trabalho de 10 s da âncora |
+
+**Saída por rodada** (`struct rtls_range_set`): número da rodada, instante,
+e para cada âncora o ID, a posição, `distance_m` (corrigida),
+`distance_raw_m` (bruta) e as potências.
+
+---
+
+### 2.5 Localização · `lib/loc/` 📐
+
+| Função | Situação | Uso |
+|--------|----------|-----|
+| `rtls_loc_default_cfg()` | ✅ lê σ_r, σ_a, gating e o modo 2D/3D do Kconfig | `apps/tag` |
+| `rtls_loc_init()` / `_reset()` | ✅ zera o estado | `apps/tag` |
+| `rtls_loc_multilaterate()` | 📐 `-ENOSYS` | — |
+| `rtls_loc_update()` | 📐 `-ENOSYS` (a tag registra o aviso uma vez e segue) | `apps/tag` |
+
+Especificação: [04-algoritmos.md](04-algoritmos.md) §4–5. É o núcleo do M4.
+
+### 2.6 Interface com o host · `lib/host_if/` 📐
+
+| Função | Situação | Uso |
+|--------|----------|-----|
+| `rtls_host_if_init()` | 🧪 confere o SPIS (`chosen rtls,host-spi`) e configura o DRDY (P0.26) | `apps/gateway` |
+| `rtls_host_if_publish()` | 📐 `-ENOSYS` | `publish_snapshot()` do gateway |
+
+Protocolo: [05-interface-spi-gateway.md](05-interface-spi-gateway.md).
+
+### 2.7 LEDs de status · `lib/common/status_led.c` 🧪
+
+| LED (alias) | Função | Disparo |
+|-------------|--------|---------|
+| verde (`led1`) | heartbeat: firmware vivo | `k_timer` a cada 500 ms |
+| azul (`led3`) | atividade UWB | `rtls_status_led_activity()`: rodada ok, POSITION, resumo da âncora, ping/pong |
+| vermelho (`led0`) | erro persistente | `rtls_status_led_error(true)`: falha de init |
+
+---
+
+### 2.8 Firmware da tag · `apps/tag/src/main.c` 🧪
+
+```mermaid
+flowchart LR
+    s["Início<br/>LEDs · dw1000_init/configure<br/>initiator_init · loc_init"] --> c["next += 100 ms"]
+    c --> r["rtls_twr_initiator<br/>_run_round()"]
+    r -- ok --> p["print_ranges()<br/>CSV R,..."] --> l["rtls_loc_update()"]
+    l -- "0 (após o M4)" --> pos["send_position()<br/>→ gateway"] --> st
+    l -- "-ENOSYS (hoje)" --> st
+    r -- erro --> st{"10 s?"}
+    st -- sim --> ls["log_stats()"] --> z
+    st -- não --> z["k_sleep até next<br/>(K_TIMEOUT_ABS_MS)"]
+    z --> c
+```
+
+| Função local | O que faz |
+|--------------|-----------|
+| `print_ranges()` | uma linha `R,round,t_ms,ancora,dist_mm,rx_cdbm,fp_cdbm,raw_mm` por distância |
+| `log_stats()` | resumo de 10 s: rodadas, % completas, tempo de rodada, por âncora |
+| `send_position()` | monta e envia o POSITION (alcançado quando o M4 existir) |
+
+### 2.9 Firmware da âncora · `apps/anchor/src/main.c` 🧪
+
+- **Inicialização:** monta `rtls_twr_responder_cfg` com o ID e a posição do
+  Kconfig e chama `rtls_twr_responder_run()`, que não retorna.
+- **Resumo de 10 s:** feito por `stats_work` (`k_work_delayable`) na
+  workqueue do sistema, sem parar o responder.
+- **Uma imagem por âncora:** `-DEXTRA_CONF_FILE=nodes/aN.conf` define ID e
+  posição.
+
+### 2.10 Firmware do gateway · `apps/gateway/src/` 🧪
+
+```mermaid
+flowchart LR
+    rx["dw1000_receive()<br/>(espera até o próximo snapshot)"] --> h["handle_frame():<br/>rtls_frame_parse()"]
+    h -- POSITION --> up["tag_table_update()"]
+    rx --> t{"100 ms?"}
+    t -- sim --> snap["tag_table_snapshot()<br/>(expira tags > 2 s)"] --> pub["rtls_host_if_publish() 📐"]
+```
+
+| Função | O que faz |
+|--------|-----------|
+| `tag_table_update()` | insere ou atualiza a tag (posição, σ, RSSI, rodada) |
+| `tag_table_snapshot()` | copia as entradas ativas com a idade e remove as expiradas |
+
+### 2.11 Bancada do driver · `samples/uwb_pingpong` 🧪
+
+Ping a cada 100 ms com RX automático. O pong responde com TX atrasado de
+1 ms. A cada 100 pings imprime PER, potência média e TX atrasados perdidos.
+Valida o driver isoladamente (M1).
+
+### 2.12 Testes unitários · `tests/unit` ✅
+
+| Suíte | Testes | Cobre |
+|-------|--------|-------|
+| `twr_math` | 11 | wrap de 40 bits, DS-TWR ideal e com ±20 ppm, intervalos, conversões de tempo, slots, RSL por Friis, tabela de viés, distância corrigida |
+| `frames` | 4 | montagem/parse, rejeição de PAN e tamanho, quadro grande demais, tamanhos |
+
+Execução: `native_sim` (Linux/WSL) ou gravados na placa (`build/unit_board`).
+
+### 2.13 Ferramentas e scripts
+
+```mermaid
+flowchart LR
+    uart["UART da tag<br/>linhas R,..."] -->|capture| csv[("CSV")]
+    csv -->|stats| s["sucesso · média corrigida e bruta<br/>desvio · potência · viés"]
+    csv -->|calib| c1["Δ atraso de antena<br/>(par igual)"]
+    csv -->|calib3| c3["Δ por placa<br/>(3 placas)"]
+```
+
+| Arquivo | Para quê |
+|---------|----------|
+| `scripts/setup/setup-windows.ps1`, `setup-linux.sh` | instalam o ambiente completo (west, Zephyr, SDK) |
+| `scripts/env.ps1`, `env.sh` | ativam o venv e o J-Link num terminal novo |
+| `scripts/list-boards.ps1`, `.sh` | porta serial × serial do J-Link de cada placa |
+
+---
+
+## 3. Zephyr no projeto
+
+### 3.1 Por que Zephyr
+
+| Necessidade | O que o Zephyr dá |
+|-------------|-------------------|
+| Suporte à placa | `decawave_dwm1001_dev` oficial: devicetree com pinos, SPI, LEDs |
+| Prazos de ~1 ms | escalonador com prioridades e timeouts precisos (32 768 Hz) |
+| Concorrência sem afetar o rádio | log diferido, timers e workqueue |
+| Portabilidade e reprodutibilidade | drivers SPI/GPIO genéricos; versão fixada no `west.yml` |
+| Testes sem hardware | `native_sim` + ztest + twister |
+
+### 3.2 Do código ao binário
+
+```mermaid
+flowchart LR
+    w["west.yml<br/>Zephyr v4.4.0 + módulos"] -->|west update| ws["workspace<br/>zephyr · modules"]
+    ws --> b["west build -b decawave_dwm1001_dev apps/tag"]
+    b --> mod["descobre o módulo<br/>zephyr/module.yml → lib/ · drivers/"]
+    b --> k["Kconfig<br/>padrões + prj.conf + nodes/*.conf + -D"]
+    b --> dt["Devicetree<br/>DTS da placa + boards/*.overlay"]
+    k --> h1[".config<br/>autoconf.h"]
+    dt --> h2["devicetree_generated.h"]
+    h1 & h2 --> cc["arm-zephyr-eabi-gcc<br/>(SDK 1.0.1)"]
+    cc --> elf["zephyr.elf / .hex"]
+    elf -->|west flash| jl["J-Link OB → placa"]
+```
+
+### 3.3 Recursos usados e onde
+
+| Recurso do Zephyr | API | Onde no projeto | Para quê |
+|-------------------|-----|-----------------|----------|
+| SPI | `spi_transceive_dt()`, `spi_write_dt()` | `dw1000.c` | registradores do DW1000 (2 MHz no init, 8 MHz depois) |
+| GPIO | `gpio_pin_configure_dt()`, callbacks | `dw1000.c`, `status_led.c`, `host_if.c` | RESET, IRQ, LEDs, DRDY |
+| Semáforo | `K_SEM_DEFINE`, `k_sem_take/give` | `dw1000.c` | a ISR acorda a thread dona do rádio |
+| Timeouts / tempo | `sys_timepoint_*`, `K_USEC`, `K_TIMEOUT_ABS_MS` | `dw1000.c`, `twr_*.c`, tag | janelas de RX; ciclo de 100 ms sem deriva |
+| Timer | `K_TIMER_DEFINE` | `status_led.c` | heartbeat |
+| Workqueue | `K_WORK_DELAYABLE_DEFINE` | âncora | resumo sem parar o responder |
+| Ciclos de CPU | `k_cycle_get_32()` | initiator | tempo da rodada |
+| Log | `LOG_MODULE_REGISTER`, `LOG_INF` | todos | logs por módulo, em modo diferido |
+| `printk` | `printk()` | tag | CSV síncrono na UART |
+| Devicetree | `SPI_DT_SPEC_GET`, `GPIO_DT_SPEC_GET`, `DT_CHOSEN` | `dw1000.c`, `host_if.c`, LEDs | pinos e barramentos sem número fixo no código |
+| ztest / twister | `ZTEST`, `zassert_*` | `tests/unit` | testes das bibliotecas puras |
+| Módulo externo | `zephyr/module.yml` | raiz | `lib/` e `drivers/` entram em qualquer app do workspace |
+
+### 3.4 Devicetree: o hardware visto pelo código
+
+```mermaid
+flowchart LR
+    subgraph DT["Devicetree"]
+        spi2["spi2 · P0.16/18/20 · CS P0.17<br/>dw1000@0 (decawave,dw1000)<br/>int P0.19 · reset P0.24 · 8 MHz"]
+        spi1["spi1 → nordic,nrf-spis (overlay)<br/>P0.04/06/07 · CSN P0.03<br/>def-char 0x00 · chosen rtls,host-spi"]
+        user["zephyr,user<br/>drdy-gpios = P0.26"]
+        leds["led0 · led1 · led3"]
+    end
+    spi2 --> d["dw1000.c<br/>DT_COMPAT_GET_ANY_STATUS_OKAY"]
+    spi1 --> hi["host_if.c<br/>DT_CHOSEN(rtls_host_spi)"]
+    user --> hi
+    leds --> sl["status_led.c<br/>DT_ALIAS(ledN)"]
+```
+
+| Arquivo | O que define |
+|---------|--------------|
+| DTS da placa (Zephyr) | DW1000 no SPI2, LEDs, botão, UART0 (console) |
+| `apps/tag/boards/*.overlay`, `apps/anchor/boards/*.overlay` | garante o SPI2 habilitado |
+| `apps/gateway/boards/*.overlay` | SPI1 como escravo, pinos, DRDY, `chosen` |
+
+### 3.5 Kconfig: ligando e configurando módulos
+
+```mermaid
+flowchart TB
+    rootk["Kconfig (raiz do módulo)"] --> dk["drivers/dw1000/Kconfig<br/>RTLS_DW1000 (automático se o DT tem dw1000)"]
+    rootk --> lk["lib/*/Kconfig<br/>RTLS_PROTO · RTLS_TWR(_MATH) · RTLS_LOC<br/>RTLS_HOST_IF · RTLS_STATUS_LED"]
+    appk["apps/*/Kconfig<br/>RTLS_NODE_ID e opções do papel"] --> zk["Kconfig.zephyr"]
+    prj["apps/*/prj.conf"] -->|liga| lk
+```
+
+- `RTLS_TWR` seleciona sozinho `RTLS_TWR_MATH` e `RTLS_PROTO`.
+- `RTLS_DW1000` depende do nó `decawave,dw1000` existir e do driver
+  IEEE 802.15.4 do Zephyr estar **desligado**.
+- O `prj.conf` decide o que cada firmware inclui (tabela da [seção 1.4](#14-o-que-entra-em-cada-firmware)).
+
+### 3.6 Execução: threads, ISRs e prioridades
+
+| Contexto | Prioridade | O que roda | Arquivo |
+|----------|-----------|------------|---------|
+| ISR GPIOTE (P0.19) | interrupção | `k_sem_give()` | `dw1000.c` |
+| ISR do timer | interrupção | alterna o LED verde | `status_led.c` |
+| workqueue do sistema | cooperativa (−1) | resumo de 10 s da âncora | `apps/anchor` |
+| `main` | preemptiva 0 | rádio: ciclo da tag / responder / RX do gateway | `apps/*` |
+| thread de log | baixa | formata e envia os logs | Zephyr |
+| idle | mínima | — | Zephyr |
+
+### 3.7 Impacto do Zephyr em cada tópico
+
+| Tópico | Impacto | Cuidado adotado |
+|--------|---------|-----------------|
+| Driver / tempo de resposta | ISR → thread em dezenas de µs; o SPI não pode ser usado na ISR | modelo ISR + semáforo; `T_reply` de 1 ms |
+| DS-TWR | os prazos do RX usam o tick do kernel (~30 µs) | janelas com folga (`RX_MARGIN_US`) |
+| Âncora | a workqueue (prioridade −1) pode interromper o responder por algumas dezenas de µs a cada 10 s | trabalho curto (log diferido + LED); dentro da folga de 1 ms |
+| Logs | modo diferido: `LOG_*` só enfileira e não atrasa o rádio | `CONFIG_LOG_MODE_DEFERRED=y` nos apps |
+| CSV | `printk` é **síncrono**: ~15 ms de UART por ciclo com 4 âncoras | roda depois da rodada; limita taxas acima de ~40 Hz (ver `RTLS_TAG_CSV_OUTPUT`) |
+| Configuração | Kconfig não tem ponto flutuante | grandezas inteiras com unidade no nome (`_MM`, `_US`, `_X10`) |
+| Testes | `native_sim` não roda no Windows | testes gravados na placa ou em Linux/WSL |
+| Reprodutibilidade | versão do Zephyr e dos módulos fixada | `west.yml` com `revision: v4.4.0` |
+| Memória | alocação estática; uso visível no build | tag: 49,9 KB flash / 11,7 KB RAM |
+
+---
+
+## 4. Parâmetros editáveis
+
+### 4.1 Como alterar e onde ver o valor final
+
+```mermaid
+flowchart LR
+    d["Padrão no Kconfig"] --> p["prj.conf do app"] --> e["EXTRA_CONF_FILE<br/>(nodes/aN.conf)"] --> c["-DCONFIG_...=<br/>na linha do west build"]
+    c --> f["build/APP/zephyr/.config<br/>(valor efetivo)"]
+```
+
+Da esquerda para a direita, cada fonte sobrescreve a anterior. Exemplos:
+
+```bash
+west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a2 -- -DEXTRA_CONF_FILE=nodes/a2.conf
+west build -b decawave_dwm1001_dev apps/tag -d build/tag -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=3
+west build -d build/tag -t menuconfig
+```
+
+Depois de mudar um parâmetro, use `-p always` se o build anterior não pegar
+a mudança. Confira sempre o `.config`.
+
+### 4.2 Identidade e rede
+
+| Parâmetro | Padrão (faixa) | O que faz | Impacto ao alterar | Igual em todos? |
+|-----------|----------------|-----------|--------------------|-----------------|
+| `RTLS_NODE_ID` (tag) | `0x1001` (`0x1001–0x1FFF`) | endereço curto da tag | precisa ser único; no M7 também define o slot TDMA | único por tag |
+| `RTLS_NODE_ID` (âncora) | `0xA001` (`0xA001–0xAFFF`) | endereço da âncora | precisa estar na lista que a tag consulta, senão a âncora nunca responde | único por âncora |
+| `RTLS_NODE_ID` (gateway) | `0x0001` | endereço do gateway | as tags enviam para `0x0001` fixo: mudar quebra a recepção | — |
+| `RTLS_PAN_ID` | `0xDECA` | PAN da rede (filtro de hardware) | nós com PAN diferente se ignoram; permite redes separadas | **sim** |
+| `RTLS_TAG_ANCHOR_BASE_ID` | `0xA001` | primeira âncora consultada | a lista é base, base+1, … | — |
+| `RTLS_TAG_NUM_ANCHORS` | 4 (1–4) | âncoras por rodada | a rodada dura $2T_{reply} + (2N-1)T_{slot}$; posição 2D exige ≥ 3 | — |
+| `RTLS_ANCHOR_POS_{X,Y,Z}_MM` | 0 | posição da âncora, enviada no REPORT | não altera a distância; erro aqui vira erro direto de posição no M4 | por âncora |
+
+### 4.3 Temporização do DS-TWR
+
+| Parâmetro | Padrão (faixa) | O que faz | Impacto ao alterar | Igual em todos? |
+|-----------|----------------|-----------|--------------------|-----------------|
+| `RTLS_TAG_UPDATE_RATE_HZ` | 10 (1–50) | período do ciclo = 1000 / taxa ms | mais Hz = mais uso de canal; o ciclo precisa caber a rodada (~9,2 ms) + o CSV (~15 ms) | — |
+| `RTLS_TWR_REPLY_DELAY_US` | 1000 (300–5000) | atraso POLL→1º RESP e FINAL→1º REPORT | menor encurta a rodada (capacidade), mas arrisca TX tarde (`TX atrasado` > 0, rodada perdida) | **sim** |
+| `RTLS_TWR_SLOT_US` | 1000 (500–5000) | espaço entre as respostas das âncoras | menor encurta a rodada; meio slot precisa cobrir tempo no ar + programar o FINAL | **sim** |
+| `RTLS_TWR_RX_MARGIN_US` | 500 (0–5000) | folga das janelas de REPORT (tag) e FINAL (âncora) | maior tolera jitter, mas alonga a rodada quando falta resposta | recomendado |
+
+> Meta atual: 8 tags a 10 Hz com 1 ms (decisão de 25/10/2026). Ver
+> [03 §5.3](03-protocolo-uwb.md#53-de-onde-vem-o-limite-de-8-tags-e-como-subir).
+
+### 4.4 Rádio e calibração
+
+| Parâmetro | Padrão (faixa) | O que faz | Impacto ao alterar | Igual em todos? |
+|-----------|----------------|-----------|--------------------|-----------------|
+| `RTLS_DW1000_SPI_FREQ_SLOW` | 2 MHz (0,125–3 MHz) | SPI durante o init | acima de 3 MHz o DW1000 não inicializa (estado INIT) | — |
+| `RTLS_DW1000_TX_ANT_DLY` | 16436 ticks | atraso de antena de TX | cada tick no total da placa desloca a distância em ~2,3 mm; calibrar a 5 m | **por placa** |
+| `RTLS_DW1000_RX_ANT_DLY` | 16436 ticks | atraso de antena de RX | idem | **por placa** |
+| PHY (`DW1000_PHY_CONFIG_DEFAULT`) | canal 5 · PRF 64 · 128 · código 9 · 6,8 Mbps | configuração do rádio | **não editável**: outra combinação exige novas tabelas de ajuste (`-ENOTSUP`) | **sim** |
+
+### 4.5 Correção de viés por RSL
+
+| Parâmetro | Padrão (faixa) | O que faz | Impacto ao alterar | Igual em todos? |
+|-----------|----------------|-----------|--------------------|-----------------|
+| `RTLS_TWR_RANGE_BIAS_CORRECTION` | `y` | aplica a tabela do APS011 a cada distância | desligado, 1 m sai ~10,5 cm curto e o M2 reprova | só a tag usa |
+| `RTLS_TWR_RANGE_BIAS_GAIN_DB_X10` | 0 (−200 a 200) | ganho das antenas menos perdas no Friis | desloca o RSL estimado; a distância de calibração passa a 5,0 m × 10^(G/20) (ex.: +3 dB → 7,1 m) | só a tag |
+
+### 4.6 Localização (preparados para o M4)
+
+Hoje esses parâmetros só são lidos por `rtls_loc_default_cfg()` e **não têm
+efeito**, porque o EKF ainda não existe.
+
+| Parâmetro | Padrão | Efeito previsto |
+|-----------|--------|-----------------|
+| `RTLS_LOC_MODE_2D` / `_3D` | 2D | dimensão do estado; 3D exige âncoras não coplanares |
+| `RTLS_LOC_TAG_HEIGHT_MM` | 1000 | z fixo da tag no modo 2D |
+| `RTLS_LOC_RANGE_STD_MM` | 100 (1–5000) | σ_r: maior suaviza e confia menos nas medidas |
+| `RTLS_LOC_ACCEL_STD_MMS2` | 1000 (1–100000) | σ_a: maior responde mais rápido a manobras, com mais ruído |
+| `RTLS_LOC_GATE_CHI2_X100` | 663 | limiar χ²: menor rejeita mais outliers |
+
+### 4.7 Saída e diagnóstico
+
+| Parâmetro | Padrão | O que faz | Impacto ao alterar |
+|-----------|--------|-----------|--------------------|
+| `RTLS_TAG_CSV_OUTPUT` | `y` | linhas `R,...` na UART | ~15 ms de UART síncrona por ciclo com 4 âncoras; desligue acima de ~40 Hz |
+| `RTLS_TAG_STATS_PERIOD_S` | 10 (0 desliga) | resumo do TWR na tag | menor dá mais detalhe; os contadores zeram a cada resumo |
+| `RTLS_STATUS_LED_HEARTBEAT_MS` | 500 | meio período do LED verde | só visual |
+| `RTLS_DW1000_LOG_LEVEL_*`, `RTLS_TWR_LOG_LEVEL_*`, `RTLS_HOST_IF_LOG_LEVEL_*` | padrão do Zephyr | nível de log por módulo | `DBG` no `rtls_twr` registra cada quadro descartado e pode inundar a UART |
+
+### 4.8 Gateway
+
+| Parâmetro | Padrão (faixa) | O que faz | Impacto ao alterar |
+|-----------|----------------|-----------|--------------------|
+| `RTLS_GATEWAY_MAX_TAGS` | 16 (1–64) | capacidade da tabela | ~66 B de RAM por tag (entrada da tabela + cópia no snapshot); tags além disso são ignoradas |
+| `RTLS_GATEWAY_TAG_TIMEOUT_MS` | 2000 | expiração de tag sem atualização | menor tira mais cedo uma tag que saiu; pequeno demais remove tags com perdas pontuais |
+| `RTLS_GATEWAY_PUBLISH_MS` | 100 | período do snapshot para o host | também limita a espera do RX entre publicações |
+
+### 4.9 Bancada (ping-pong)
+
+| Parâmetro | Padrão | O que faz |
+|-----------|--------|-----------|
+| `PINGPONG_ROLE_PING` / `_PONG` | ping | papel da placa |
+| `PINGPONG_PERIOD_MS` | 100 | intervalo entre pings |
+| `PINGPONG_REPLY_US` | 1000 | antecedência do TX atrasado do pong; 500 testa a margem do M1 |
+| `PINGPONG_REPORT_EVERY` | 100 | pings por resumo |
+
+### 4.10 Opções do Zephyr usadas nos `prj.conf`
+
+| Opção | Onde | Por quê | Impacto ao alterar |
+|-------|------|---------|--------------------|
+| `CONFIG_FPU=y` | tag | `float` do EKF e `log10f` em hardware | sem ela tudo vira ponto flutuante emulado, bem mais lento |
+| `CONFIG_MAIN_STACK_SIZE=4096` | tag | buffers de quadro e conjuntos de distâncias na pilha | reduzir arrisca estouro de pilha |
+| `CONFIG_LOG_MODE_DEFERRED=y` | todos | o log não bloqueia o rádio | o modo imediato bloquearia a thread do rádio durante a UART |
+| `CONFIG_SPI=y`, `CONFIG_GPIO=y` | todos | barramentos do DW1000 e LEDs | obrigatórios |
+| `CONFIG_ZTEST=y` | testes | framework de teste | — |
+
+### 4.11 Parâmetros de devicetree
+
+| Item | Valor | Onde mudar | Impacto |
+|------|-------|-----------|---------|
+| SPI do DW1000 | SPI2, 8 MHz máx. | DTS da placa / overlay | acima do suportado pelo nRF52832 não funciona |
+| IRQ / RESET do DW1000 | P0.19 / P0.24 | DTS da placa | fixos pela DWM1001 |
+| SPI escravo do gateway | SPI1, P0.04/06/07, CSN P0.03 | `apps/gateway/boards/*.overlay` | precisa casar com a fiação do host |
+| `def-char` do SPIS | `0x00` | idem | é o "ainda não pronto" do protocolo SPI |
+| DRDY | P0.26, ativo alto | `zephyr,user` no overlay | precisa casar com a IRQ do host |
+
+### 4.12 Constantes no código (não configuráveis)
+
+| Constante | Valor | Onde | Por quê |
+|-----------|-------|------|---------|
+| `TWR_RX_GUARD_US` | 300 µs | `lib/twr/twr_internal.h` | o RX liga antes do slot para pegar o preâmbulo |
+| `RANGE_MIN_M` / `RANGE_MAX_M` | −1 m / 300 m | `twr_initiator.c` | descarta distâncias corrompidas |
+| `DW_TX_TIMEOUT` / `DW_DELAYED_TX_TIMEOUT` | 5 ms / 50 ms | `dw1000.c` | prazo para o fim do TX; TX atrasado deve ser < 50 ms à frente |
+| `RTLS_MAX_ANCHORS_PER_ROUND` | 4 | `frames.h` | tamanho do POLL e dos arrays |
+| Endereços (`RTLS_ADDR_*`) | gateway `0x0001`, broadcast `0xFFFF` | `frames.h` | protocolo |
+| Tabela de viés e Friis | APS011 tab. 2, −14,3 dBm, canal 5 | `twr_math.c` | válidos só para canal 5 / PRF 64 |
+| `STATS_PERIOD` | 10 s | `apps/anchor/src/main.c` | resumo da âncora |
+| `RTLS_HOST_IF_RECORDS_PER_PAGE` | 9 | `host_if.h` | limite de 255 B do SPIS |
+
+---
+
+## 5. Manutenção deste documento
+
+Ao implementar ou alterar algo:
+
+1. Atualize o componente na **seção 2** (o que faz, quem usa, situação) e o
+   diagrama dele.
+2. Atualize os diagramas das **seções 1.1–1.2** se mudou a arquitetura ou o
+   status de um módulo.
+3. Acrescente na **seção 3** todo recurso novo do Zephyr que passar a ser
+   usado.
+4. Acrescente na **seção 4** todo parâmetro novo (Kconfig, devicetree ou
+   constante relevante), com o impacto ao alterar.
+5. Confira se os diagramas Mermaid continuam renderizando.
