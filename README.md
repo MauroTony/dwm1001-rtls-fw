@@ -23,6 +23,7 @@ a placa **Qorvo/Decawave DWM1001-DEV** (nRF52832 + DW1000), sobre o
 | M2: DS-TWR 1×1 + calibração | implementado, com correção de viés por RSL (APS011); validar e calibrar com `tools/rtls_log.py` |
 | M3: DS-TWR 1×4 a 10 Hz | implementado; validar em bancada |
 | M4 a M8 | pendentes (o EKF, núcleo do TCC, é o M4) |
+| M9 e M10 (opcionais) | se houver tempo: descoberta e seleção de âncoras; até 8 âncoras por rodada com detecção de NLOS por redundância |
 
 As etapas, com roteiro de teste e critério de aceite, estão em
 [docs/08-etapas-e-testes.md](docs/08-etapas-e-testes.md); o roadmap e as
@@ -57,14 +58,14 @@ Guia completo, com passo a passo manual e solução de problemas:
 
 | Documento | Conteúdo |
 |-----------|----------|
-| [01-planejamento](docs/01-planejamento.md) | Escopo, requisitos, decisões, roadmap M0–M8, validação, riscos |
+| [01-planejamento](docs/01-planejamento.md) | Escopo, requisitos, decisões, roadmap M0–M8 (+ M9–M10 opcionais), validação, riscos |
 | [02-arquitetura](docs/02-arquitetura.md) | Hardware, pinos, camadas, papéis, threads, Kconfig |
 | [03-protocolo-uwb](docs/03-protocolo-uwb.md) | PHY, quadros, sequência DS-TWR, temporização, TDMA |
 | [04-algoritmos](docs/04-algoritmos.md) | DS-TWR, calibração de antena, multilateração, EKF |
 | [05-interface-spi-gateway](docs/05-interface-spi-gateway.md) | Protocolo SPI gateway → host |
 | [06-configuracao-ambiente](docs/06-configuracao-ambiente.md) | Setup Windows/Linux, build, gravação, debug |
 | [07-bancada](docs/07-bancada.md) | Roteiro de validação em hardware do M1 ao M3, calibração de antena |
-| [08-etapas-e-testes](docs/08-etapas-e-testes.md) | Todas as etapas (M0–M8) com testes automatizados, roteiro de bancada e critério de aceite |
+| [08-etapas-e-testes](docs/08-etapas-e-testes.md) | Todas as etapas (M0–M8 e os opcionais M9–M10) com testes automatizados, roteiro de bancada e critério de aceite |
 | [09-guia-do-codigo](docs/09-guia-do-codigo.md) | **Guia vivo do código**: arquitetura com diagramas, cada componente, Zephyr no projeto e todos os parâmetros editáveis |
 
 ## Estrutura

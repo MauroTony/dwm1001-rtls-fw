@@ -45,6 +45,9 @@ da tag até o host. Recursos fora desse caminho ficam para depois (seção 2.2).
 - Configuração por nó (ID, posição da âncora, atrasos de antena).
 - Testes unitários dos algoritmos (native_sim) e roteiro de validação em
   bancada para o TCC.
+- **Opcional, no fim do projeto, se houver tempo (M9–M10):** descoberta e
+  seleção dinâmica de âncoras; até 8 âncoras por rodada, com detecção e
+  exclusão de NLOS por redundância.
 
 ### 2.2 Fora do escopo (por enquanto)
 
@@ -140,7 +143,14 @@ flowchart LR
     M5 --> M7[M7 Multi-tag<br/>TDMA]
     M6 --> M8[M8 Robustez<br/>e avaliação]
     M7 --> M8
+    M8 -.-> M9[M9 Descoberta e<br/>seleção de âncoras]:::opt
+    M8 -.-> M10[M10 Até 8 âncoras<br/>+ redundância NLOS]:::opt
+    M9 -. integra .-> M10
+    classDef opt fill:#eceff1,stroke:#78909c,color:#111,stroke-dasharray:4 3
 ```
+
+Os marcos em tracejado são **opcionais**: entram no fim do projeto se houver
+tempo e não bloqueiam o núcleo (M0–M8).
 
 **Situação atual:**
 
@@ -149,6 +159,7 @@ flowchart LR
 | M0 | concluído |
 | M1, M2, M3 | implementados e compilando; falta a validação em hardware ([07-bancada.md](07-bancada.md)) |
 | M4 a M8 | pendentes |
+| M9, M10 | opcionais, no fim do projeto se houver tempo |
 
 ### M0 — Ambiente e estrutura base · ~1 semana
 
@@ -250,8 +261,62 @@ flowchart LR
 - **Aceite:** reconfigurar um nó sem recompilar; 1 h de operação contínua
   sem reset; dataset e gráficos para o texto do TCC.
 
-**Total estimado:** ~19 semanas. O M4a corre em paralelo e reduz o caminho
-crítico.
+### M9 — Descoberta e seleção dinâmica de âncoras · ~3 semanas · *opcional*
+
+- **Objetivo:** a tag escolhe sozinha, a cada rodada, as âncoras que vai
+  consultar entre todas as que ouve. A lista fixa do build deixa de existir.
+- **Depende de:** M4 (posição do EKF) e M7 (superquadro TDMA para os anúncios).
+- **Tarefas:**
+  - Anúncio de âncoras: mensagem `ANCHOR_INFO` (ID, posição, flags) enviada
+    por cada âncora numa janela de serviço do superquadro, por exemplo a
+    cada 1 s ([03 §7](03-protocolo-uwb.md#7-extensões-planejadas-m9m10)).
+  - Tabela de âncoras na tag: ID, posição, taxa de sucesso, potência,
+    histórico de rejeição pelo gating, expiração.
+  - Seleção:
+    - antes da 1ª posição, pela potência dos anúncios;
+    - depois, uma âncora por quadrante e as mais próximas;
+    - como evolução, seleção gulosa que minimiza $\operatorname{tr}(P^+)$ do EKF;
+    - sempre com histerese.
+  - Vaga rotativa: 3 âncoras fixas + 1 que alterna para avaliar as demais.
+  - POLL com lista dinâmica; política fixa/dinâmica por Kconfig.
+- **Aceite:**
+  - a tag descobre todas as âncoras ao alcance em ≤ 2 s após ligar;
+  - com 8 âncoras instaladas, as 4 escolhidas cercam a tag (uma por quadrante,
+    quando possível) em ≥ 90 % dos ciclos;
+  - a troca de âncoras não reinicia o EKF nem causa salto de posição > 3σ;
+  - uma âncora com NLOS persistente sai da seleção em ≤ 5 s;
+  - o RMSE não piora em relação às 4 âncoras fixas no mesmo ponto.
+
+### M10 — Até 8 âncoras por rodada e detecção de NLOS por redundância · ~3 semanas · *opcional*
+
+- **Objetivo:** medir até 8 âncoras na mesma rodada e usar a redundância para
+  **detectar e excluir** distâncias contaminadas por NLOS/multipercurso.
+- **Depende de:** M4. Integra com o M9, que passa a escolher até N âncoras.
+- **Tarefas:**
+  - Protocolo: `RTLS_MAX_ANCHORS_PER_ROUND` = 8; POLL de tamanho variável
+    (3 + 2N B); `RTLS_TAG_NUM_ANCHORS` de 1 a 8; testes e `docs/03`.
+  - Algoritmo de redundância (FDE, *fault detection and exclusion*, no estilo
+    do RAIM do GNSS):
+    1. resolve a posição por LS com as N distâncias;
+    2. calcula os resíduos e a estatística $\text{SSE}/\sigma_r^2 \sim \chi^2_{N-n}$;
+    3. acima do limiar, há falha: testa os N subconjuntos "deixa-um-de-fora"
+       e fica com o de menor SSE consistente;
+    4. repete enquanto sobrar redundância e até k exclusões. Como o NLOS só
+       alonga a distância, resíduos positivos têm preferência na exclusão.
+  - Integração com o EKF: distâncias excluídas não atualizam o filtro (flag
+    `OUTLIER`). Opcionalmente, $\sigma_r$ por âncora pelo indicador
+    $P_{RX} - P_{FP}$.
+  - N por rodada configurável. Com N = 4 a meta do M7 (8 tags a 10 Hz) é
+    mantida; com N = 8 a capacidade cai para ~4 tags a 10 Hz.
+- **Aceite:**
+  - rodada com 8 âncoras ≤ 18 ms (17,2 ms + folga) e sem TX atrasado;
+  - em LOS, exclusão indevida em ≤ 1 % das rodadas;
+  - em NLOS controlado (obstáculo bloqueando 1–2 âncoras), detecção ≥ 90 % e
+    RMSE com FDE menor que sem FDE, com IC de 95 %;
+  - FDE executa em ≤ 1 ms na tag.
+
+**Total estimado:** ~19 semanas para o núcleo (M0–M8). O M4a corre em
+paralelo e reduz o caminho crítico. Os opcionais M9 e M10 somam ~6 semanas.
 
 ## 7. Verificação e validação
 
@@ -282,6 +347,8 @@ crítico.
 | EKF × LS × LS+KF linear | RMSE, suavidade, robustez a perdas |
 | NLOS (obstáculo/pessoa) | viés, taxa de rejeição pelo gating |
 | Escalabilidade (1→4 tags) | taxa efetiva, perdas, latência |
+| *(M10)* 4 × 8 âncoras, com e sem FDE, em LOS e NLOS | RMSE, taxa de detecção, exclusões indevidas |
+| *(M9)* Movimento entre zonas com seleção dinâmica | continuidade da posição, trocas de âncora, RMSE |
 
 **Referência de verdade (ground truth):** pontos marcados no piso com trena
 laser; coordenadas das âncoras medidas no mesmo referencial.
@@ -300,11 +367,14 @@ laser; coordenadas das âncoras medidas no mesmo referencial.
 | SPIS do nRF52832 limitado a 255 B por transação | Tabela grande não cabe | Paginação no protocolo (≤ 9 tags por página) |
 | Placa marcada "not actively maintained" no Zephyr | Regressões ao atualizar | Versão do Zephyr fixada; arquivos da placa são simples e podem ser copiados para `boards/` se preciso |
 | Windows: `jlink.exe` do JDK no PATH, *native_sim* indisponível | Flash/teste falham | O runner usa o registro do J-Link; `scripts/env.ps1` põe o J-Link na frente; testes no WSL/CI |
+| Falta de tempo para os opcionais (M9–M10) | Funcionalidades ficam de fora | São marcos independentes do núcleo; podem virar "trabalhos futuros" na monografia |
+| 8 âncoras por rodada reduzem a capacidade de tags | Menos tags a 10 Hz | N configurável; padrão 4 |
 
 ## 9. Material e convenções
 
 **Hardware mínimo:**
-- 6× DWM1001-DEV (4 âncoras, 1 tag, 1 gateway), mais 3 para o M7.
+- 6× DWM1001-DEV (4 âncoras, 1 tag, 1 gateway), mais 3 para o M7 e mais 4
+  para o M9–M10 (8 âncoras).
 - Suportes/tripés para as âncoras.
 - Trena laser.
 - Analisador lógico.

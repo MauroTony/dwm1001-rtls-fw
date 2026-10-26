@@ -24,6 +24,10 @@ flowchart LR
     M5 --> M7["M7<br/>TDMA"]
     M6 --> M8["M8<br/>Robustez"]
     M7 --> M8
+    M8 -.-> M9["M9<br/>Seleção de âncoras"]:::opt
+    M8 -.-> M10["M10<br/>8 âncoras + FDE"]:::opt
+    M9 -.-> M10
+    classDef opt fill:#eceff1,stroke:#78909c,color:#111,stroke-dasharray:4 3
 ```
 
 | Etapa | Situação | Testes automatizados | Bancada | Placas |
@@ -37,6 +41,8 @@ flowchart LR
 | M6 SPI → host | 📐 | codec TLV, CRC | host lendo a tabela | 6 + host |
 | M7 Multi-tag (TDMA) | 📐 | — | 4 tags simultâneas | 9 |
 | M8 Robustez e avaliação | 📐 | — | campanha do TCC | todas |
+| M9 Descoberta e seleção de âncoras *(opcional)* | 📐 | seleção e tabela (ztest) | 8 âncoras, movimento entre zonas | 10 |
+| M10 Até 8 âncoras + FDE *(opcional)* | 📐 | FDE com falhas sintéticas | NLOS controlado | 10 |
 
 **Legenda:** ✅ concluído · 🧪 implementado, falta a bancada · 📐 a implementar
 
@@ -399,7 +405,87 @@ avaliado para o TCC.
 
 ---
 
-## 12. Etapas opcionais (ainda não planejadas)
+## 12. M9 — Descoberta e seleção dinâmica de âncoras 📐 *(opcional)*
+
+**Objetivo:** a tag escolhe, a cada rodada, as 4 melhores âncoras entre todas
+as que ouve.
+**Depende de:** M4 e M7. Entra no fim do projeto, se houver tempo.
+
+### Implementação
+
+- [ ] mensagem `ANCHOR_INFO` (ID, posição, flags) na janela de serviço do superquadro
+- [ ] tabela de âncoras na tag: posição, sucesso, potência, rejeições pelo gating, expiração
+- [ ] seleção: potência (sem posição) → quadrante + proximidade → gulosa por $\operatorname{tr}(P^+)$; histerese
+- [ ] vaga rotativa (3 fixas + 1 alternada) e política fixa/dinâmica por Kconfig
+- [ ] CSV de seleção por ciclo (`S,round,ids...`) e suporte no `tools/rtls_log.py`
+
+### Testes automatizados
+
+| ID | Caso | Esperado |
+|----|------|----------|
+| T9.1 | 8 âncoras sintéticas em volta da tag | uma por quadrante, as mais próximas |
+| T9.2 | pequenas variações de posição/potência | a seleção **não** troca (histerese) |
+| T9.3 | seleção gulosa por $\operatorname{tr}(P^+)$ | GDOP menor que a seleção por proximidade pura |
+| T9.4 | âncora sem anúncio / rejeitada repetidamente | expira / perde prioridade |
+
+### Roteiro de bancada
+
+| ID | Passo | Esperado |
+|----|-------|----------|
+| T9.5 | 8 âncoras instaladas; ligue a tag | tabela com as 8 em ≤ 2 s |
+| T9.6 | Tag parada no centro, 2 min | as 4 escolhidas cercam a tag em ≥ 90 % dos ciclos |
+| T9.7 | Caminhe entre duas zonas | trocas de âncora sem reiniciar o EKF e sem salto > 3σ |
+| T9.8 | Bloqueie uma âncora selecionada por 10 s | sai da seleção em ≤ 5 s e volta depois de liberada |
+| T9.9 | Mesmo ponto: seleção dinâmica × 4 âncoras fixas | RMSE não pior |
+
+### Critério de aceite
+
+- [ ] T9.5, T9.6, T9.7 e T9.8
+- [ ] T9.9 sem piora de RMSE
+
+---
+
+## 13. M10 — Até 8 âncoras por rodada e detecção de NLOS por redundância 📐 *(opcional)*
+
+**Objetivo:** usar até 8 distâncias por rodada para detectar e excluir as
+contaminadas por NLOS/multipercurso (FDE, no estilo do RAIM).
+**Depende de:** M4; integra com o M9. Entra no fim do projeto, se houver tempo.
+
+### Implementação
+
+- [ ] `RTLS_MAX_ANCHORS_PER_ROUND` = 8; POLL de 3 + 2N B; `RTLS_TAG_NUM_ANCHORS` 1–8
+- [ ] FDE: LS com N distâncias → $\text{SSE}/\sigma_r^2$ contra $\chi^2_{N-n}$ → "deixa-um-de-fora" → até k exclusões
+- [ ] distâncias excluídas marcadas `OUTLIER` e fora da atualização do EKF
+- [ ] N por rodada configurável (padrão 4, que preserva a meta de 8 tags do M7)
+
+### Testes automatizados
+
+| ID | Caso | Esperado |
+|----|------|----------|
+| T10.1 | POLL com 8 âncoras | 19 B; o responder calcula o slot certo para os índices 0–7 |
+| T10.2 | 8 distâncias LOS sintéticas (σ = 5 cm), 10 000 rodadas | falsos alarmes ≈ probabilidade configurada (ex.: ≤ 1 %) |
+| T10.3 | uma distância com +50 cm | detectada e a âncora certa excluída em ≥ 99 % |
+| T10.4 | duas distâncias contaminadas, N = 8 | as duas excluídas |
+| T10.5 | redundância insuficiente (N = 3 em 2D) | detecta, mas não exclui (flag) |
+| T10.6 | tempo do FDE na placa | ≤ 1 ms |
+
+### Roteiro de bancada
+
+| ID | Passo | Esperado |
+|----|-------|----------|
+| T10.7 | Rodada com 8 âncoras, 10 min | rodada ≤ 18 ms; `TX atrasado 0`; sucesso ≥ 95 % por âncora |
+| T10.8 | LOS, 10 min, FDE ligado | exclusões indevidas em ≤ 1 % das rodadas |
+| T10.9 | Obstáculo bloqueando 1 e depois 2 âncoras | detecção ≥ 90 %; RMSE com FDE < sem FDE (IC 95 %) |
+| T10.10 | Mesmo cenário com 4 e com 8 âncoras | comparação de RMSE e de capacidade (experimento para o TCC) |
+
+### Critério de aceite
+
+- [ ] T10.7, T10.8 e T10.9
+- [ ] T10.2–T10.5 em simulação
+
+---
+
+## 14. Outras etapas opcionais (ainda não planejadas)
 
 Dependem de decisão do usuário antes de entrar no plano.
 

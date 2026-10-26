@@ -192,3 +192,41 @@ quadro por ms por nó (APS017). Os cenários acima respeitam isso.
 **Filtragem em hardware:** a âncora aceita quadros de dados do PAN para o
 próprio endereço ou broadcast. A tag só aceita os endereçados a ela. O
 gateway aceita broadcast e os endereçados a `0x0001`.
+
+## 7. Extensões planejadas (M9–M10)
+
+> **Opcionais, no fim do projeto se houver tempo.** Nada desta seção existe
+> no código. Roteiro de teste em [08 §12–13](08-etapas-e-testes.md).
+
+### 7.1 Anúncio de âncoras (M9)
+
+| Tipo | Nome | Origem → destino | Conteúdo |
+|------|------|------------------|----------|
+| `0x11` (proposto) | ANCHOR_INFO | âncora → broadcast | `pos_mm:i32[3]`, `flags:u8` (ativa, em calibração…) |
+
+- Cada âncora envia um ANCHOR_INFO a cada ~1 s, numa **janela de serviço**
+  logo após o BEACON do superquadro (M7). O slot de cada uma vem do ID.
+- A tag monta a tabela de âncoras a partir desses anúncios. O REPORT
+  continua levando a posição, o que mantém a compatibilidade.
+- Alternativa: o gateway agrega as âncoras e repete a tabela no BEACON. Isso
+  custa menos tempo de canal, mas exige que o gateway ouça todas as âncoras.
+
+### 7.2 Até 8 âncoras por rodada (M10)
+
+| Item | Hoje | M10 |
+|------|------|-----|
+| `RTLS_MAX_ANCHORS_PER_ROUND` | 4 | 8 |
+| POLL | 11 B fixo | 3 + 2N B (até 19 B) |
+| Slots de RESP/REPORT | índices 0–3 | índices 0–7 (a regra de slot não muda) |
+| FINAL | slot N | slot N |
+
+**Duração da rodada** (tempos de 1 ms): $2T_{reply} + (2N-1)T_{slot} + 0{,}2$ ms.
+
+| N | Rodada | Tags a 10 Hz |
+|---|--------|--------------|
+| 4 | 9,2 ms | 8 |
+| 6 | 13,2 ms | 6 |
+| 8 | 17,2 ms | 4 |
+
+O N por rodada fica configurável. O padrão (4) preserva a meta de 8 tags do
+M7.
