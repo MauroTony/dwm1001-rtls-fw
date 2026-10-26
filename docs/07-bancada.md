@@ -104,17 +104,21 @@ python tools/rtls_log.py calib m2_5m.csv --true-distance 5.0
 # ambas: delta +10.0 ticks -> CONFIG_RTLS_DW1000_TX_ANT_DLY=16441  CONFIG_RTLS_DW1000_RX_ANT_DLY=16441
 ```
 
-**Três placas A, B e C** (valor individual por placa):
+**Três placas A, B e C** (valor individual por placa). O `calib3` recebe um
+CSV por par, cada um com uma única âncora:
 
-1. Grave A como tag (`-DCONFIG_RTLS_TAG_NUM_ANCHORS=2`), B como âncora
-   `a1.conf` e C como âncora `a2.conf`. Assim os pares A-B e A-C saem na
-   mesma captura. Use `--anchor a001` e `--anchor a002` para separar.
-2. Grave B como tag e C como âncora `a1.conf` e capture o par B-C.
-3. Rode:
+1. A como tag (`build/tag1`), B como âncora `a1.conf`, C desligada: capture
+   o par A-B.
+2. Desligue B e grave C como âncora `a1.conf`: capture o par A-C.
+3. Grave B como tag, desligue A: capture o par B-C.
+4. Rode:
 
 ```bash
 python tools/rtls_log.py calib3 --true-distance 5.0 --ab ab.csv --ac ac.csv --bc bc.csv
 ```
+
+Os comandos completos de cada captura estão no passo T2.3 de
+[08 §5](08-etapas-e-testes.md#5-m2--ds-twr-11-e-calibração-de-antena-).
 
 Coloque os valores de cada placa no fragmento de configuração dela. Para
 âncoras, acrescente as duas linhas em `apps/anchor/nodes/aN.conf`. Para a
@@ -168,7 +172,7 @@ medidas por distância).
 |----------|------|
 | `TX atrasado` > 0 na tag ou nas âncoras | aumente `CONFIG_RTLS_TWR_REPLY_DELAY_US` (tag e âncoras iguais) |
 | RESP ok mas REPORT falhando | aumente `CONFIG_RTLS_TWR_RX_MARGIN_US` |
-| Tudo estável | reduza `REPLY_DELAY_US`/`SLOT_US` aos poucos (ex.: 800 → 600 µs) para encurtar a rodada; abaixo de ~500 µs a latência do Zephyr começa a perder slots |
+| Tudo estável | mantenha 1 ms: a meta de 8 tags a 10 Hz usa esse valor (decisão de 25/10/2026). Reduzir `REPLY_DELAY_US`/`SLOT_US` só com nova decisão; abaixo de ~500 µs a latência do Zephyr começa a perder slots |
 
 > `REPLY_DELAY_US` e `SLOT_US` precisam ser **iguais na tag e em todas as
 > âncoras**: passe os mesmos `-DCONFIG_...` em todos os builds.

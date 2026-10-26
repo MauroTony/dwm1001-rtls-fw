@@ -309,10 +309,13 @@ Também servem o PuTTY, o Tera Term ou o monitor serial do VS Code. No boot da
 tag, o esperado no M0 é:
 
 ```
-[00:00:00.005,000] <inf> tag: RTLS tag 0x1001: 10 Hz, 4 ancoras a partir de 0xa001
-[00:00:00.012,000] <inf> rtls_dw1000: DW1000 DEV_ID 0xdeca0130
-[00:00:00.012,000] <wrn> tag: ciclo TWR -> EKF -> POSITION ainda nao implementado (M1-M5)
+<inf> tag: RTLS tag 0x1001: 10 Hz, 4 ancoras a partir de 0xa001
+<inf> rtls_dw1000: DW1000 DEV_ID 0xdeca0130 part 0x........ xtal 16 ldo 0x.. otp_antdly 0x........
+<inf> rtls_dw1000: PHY: canal 5, PRF 64 MHz, preambulo 128 (codigo 9), 6800 kbps, PAN 0xdeca, addr 0x1001
 ```
+
+O boot esperado de cada papel e os comandos de bancada estão em
+[08 §2](08-etapas-e-testes.md#2-convenções-e-guia-de-bancada).
 
 ### 6.4 Debug
 
