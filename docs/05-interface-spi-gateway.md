@@ -139,3 +139,63 @@ ao detectar borda de subida no DRDY:
   próxima etapa da máquina de estados (IDLE → REQ → META → DATA → IDLE).
 - O snapshot vem de `rtls_host_if_publish()` com cópia sob mutex. O host
   sempre lê um estado coerente.
+
+## 7. Extensões planejadas (M12, opcional)
+
+> **Opcional, no fim do projeto se houver tempo.** Nada desta seção existe
+> no código. Os opcodes são propostas. Protocolo UWB e registro de
+> parâmetros em [03 §8.2](03-protocolo-uwb.md#82-configuração-remota-m12).
+
+O host passa a **configurar** tags e âncoras através do gateway. A entrega
+por UWB leva de 100 ms a alguns segundos. Por isso o modelo é assíncrono: o
+pedido devolve um `cmd_id` na hora, e o host consulta o resultado depois.
+
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant G as Gateway
+    participant N as Nó (UWB)
+    H->>G: CFG_SET (nó, chaves, valores)
+    G-->>H: envelope OK + cmd_id
+    G->>N: CONFIG (próxima janela de serviço)
+    N->>G: CONFIG_ACK (status por chave)
+    loop a cada ~100 ms até concluir
+        H->>G: CFG_STATUS (cmd_id, nó)
+        G-->>H: estado + status e valor atual por chave
+    end
+```
+
+### 7.1 Comandos novos
+
+| Request | Nome | Value | Resposta |
+|---------|------|-------|----------|
+| `0xA3` | `RTLS_CFG_SET` | `node:u16`, `flags:u8`, `n:u8`, n × (`key:u16`, `value:i32`) | envelope + `0xB3` |
+| `0xA4` | `RTLS_CFG_SET_COORD` | `n_nodes:u8`, `nodes:u16[n_nodes]`, `flags:u8`, `n:u8`, n × (`key:u16`, `value:i32`) | envelope + `0xB3` |
+| `0xA5` | `RTLS_CFG_GET` | `node:u16`, `n:u8`, n × `key:u16` | envelope + `0xB3` |
+| `0xA6` | `RTLS_CFG_STATUS` | `cmd_id:u8`, `node:u16` | envelope + `0xB4` |
+| `0xA7` | `RTLS_NODE_REBOOT` | `node:u16` | envelope + `0xB3` |
+
+- `flags`: bit 0 `PERSIST` (grava em NVS no nó).
+- `n ≤ 8` chaves por comando e `n_nodes ≤ 16`, para caber num quadro UWB e
+  na fila do gateway.
+- `node = 0x0001` aplica no próprio gateway, sem UWB.
+- Fila cheia: status `3` (ocupado) no envelope, sem `cmd_id`.
+
+### 7.2 Respostas novas
+
+**`0xB3`: comando aceito (1 B):** `cmd_id:u8`.
+
+**`0xB4`: estado de um comando num nó:**
+
+| Offset | Tipo | Campo |
+|--------|------|-------|
+| 0 | u8 | `cmd_id` |
+| 1 | u16 | `node` |
+| 3 | u8 | `state`: `0` na fila · `1` em andamento · `2` concluído · `3` erro · `4` timeout · `5` cancelado |
+| 4 | u8 | `n` |
+| 5 | rec[n] | n × (`key:u16`, `status:u8`, `value:i32`), com os status de [03 §8.2](03-protocolo-uwb.md#82-configuração-remota-m12) |
+
+- `value` é o valor **atual** no nó, lido depois de aplicar. No `CFG_GET`,
+  é a resposta.
+- O resultado fica guardado até ser lido ou até a fila precisar da vaga.
+- O DRDY continua só para os snapshots de posição.

@@ -230,3 +230,185 @@ gateway aceita broadcast e os endereçados a `0x0001`.
 
 O N por rodada fica configurável. O padrão (4) preserva a meta de 8 tags do
 M7.
+
+## 8. Extensões planejadas (M11–M12)
+
+> **Opcionais, no fim do projeto se houver tempo.** Nada desta seção existe
+> no código. Os tipos e os tamanhos são propostas. Roteiro de teste em
+> [08 §14–15](08-etapas-e-testes.md).
+
+### 8.1 SS-TWR (M11)
+
+| Tipo | Nome | Origem → destino | Tamanho | Conteúdo |
+|------|------|------------------|---------|----------|
+| `0x24` (proposto) | POLL_SS | tag → broadcast | 11 B | igual ao POLL; o **tipo** diz à âncora que a rodada é SS |
+| `0x25` (proposto) | RESP_SS | âncora → tag | 25 B | `round:u8`, `poll_rx:u40`, `reply_b:u32`, `pos_mm:i32[3]`, `fp_power_cdbm:i16` |
+
+- `reply_b` = `Db` = `resp_tx − poll_rx`, com `resp_tx` **previsto**: o
+  instante programado com os 9 bits menos significativos zerados, mais o
+  atraso de antena de TX. É o mesmo valor que o DW1000 grava no `TX_STAMP`,
+  e um contador na âncora confere isso a cada envio.
+- `poll_rx`: o timestamp completo (40 bits) do POLL na âncora. Alimenta a
+  estimativa do desvio por razão de timestamps entre rodadas.
+- `fp_power_cdbm`: potência do primeiro caminho do **POLL** na âncora (no DS
+  ela vem do FINAL).
+- A *flag* `RTLS_TWR_MODE_SS` existe só na tag. A âncora responde
+  RESP/REPORT a um POLL e RESP_SS a um POLL_SS.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as Tag
+    participant A0 as Âncora 0
+    participant A1 as Âncora 1..3
+    participant G as Gateway
+    T->>A0: POLL_SS (broadcast, round r, lista [A0..A3])
+    T-->>A1: (mesmo POLL_SS)
+    Note over A0,A1: RESP_SS em poll_rx + T_reply + i·T_slot,<br/>com o próprio instante de TX embutido
+    A0->>T: RESP_SS (poll_rx, Db, posição)
+    A1->>T: RESP_SS (poll_rx, Db, posição)
+    Note over T: a cada RESP_SS: integrador de portadora,<br/>estimativa do desvio ε e ToF
+    T->>T: localiza
+    T-)G: POSITION (para o gateway)
+```
+
+**Temporização** (tempos de 1 ms, N = 4):
+
+| t (ms) | Evento |
+|--------|--------|
+| 0,0 | Tag transmite POLL_SS |
+| 1,0 / 2,0 / 3,0 / 4,0 | Âncoras 0..3 transmitem RESP_SS (TX atrasado) |
+| ≈ 4,2 | Último RESP_SS recebido: fim da rodada |
+
+```
+T_rodada,SS = T_reply + (N − 1)·T_slot + T_ar(RESP_SS) = 1 + 3 + 0,2 = 4,2 ms
+```
+
+**DS × SS:**
+
+| Item | DS-TWR (padrão) | SS-TWR (M11) |
+|------|-----------------|--------------|
+| Quadros por rodada (N = 4) | 10 | 5 |
+| Rodada | 9,2 ms | 4,2 ms |
+| Desvio de relógio | cancelado pelo próprio estimador | estimado e compensado na tag |
+| Erro residual do desvio | ~0,2 mm a 10 m | $\tfrac12 T_{reply,i}\,\delta\varepsilon$: ~15 cm por ms e por ppm de erro da estimativa |
+| TX da âncora usado no cálculo | real (`TX_STAMP`, enviado no REPORT) | previsto (embutido no RESP_SS) |
+| FINAL atrasado na tag | aborta a rodada inteira | não existe FINAL |
+
+- **Capacidade:** com a rodada de 4,2 ms, o slot por tag cairia para ~7 ms
+  (~13 tags a 10 Hz). A meta do M7 continua **8 tags** (decisão de
+  25/10/2026). O ganho fica registrado como resultado.
+- **Potência *smart*:** a tag transmite POLL_SS e POSITION, separados por
+  mais de 4 ms, e cada âncora transmite um quadro por rodada. A regra de no
+  máximo um quadro por ms por nó (APS017) continua valendo.
+- A janela de RESP_SS fecha pela mesma regra do DS. Sem FINAL, ela pode
+  fechar em $T_{reply} + (N-1)T_{slot}$ + `RX_MARGIN_US`.
+
+### 8.2 Configuração remota (M12)
+
+```mermaid
+flowchart LR
+    H[Host] -- "SPI: CFG_SET (nó, chave, valor)" --> G[Gateway<br/>fila de comandos]
+    G -- "UWB: CONFIG<br/>(janela de serviço)" --> N[Tag ou âncora<br/>registro de parâmetros]
+    N -- "UWB: CONFIG_ACK<br/>(status, valor atual)" --> G
+    G -- "SPI: CFG_STATUS" --> H
+```
+
+**Mensagens:**
+
+| Tipo | Nome | Origem → destino | Tamanho | Conteúdo |
+|------|------|------------------|---------|----------|
+| `0x10` | BEACON (estendido) | gateway → broadcast | 7 + 2k B | campos atuais + `n_pending:u8`, `pending:u16[k]` (k ≤ 4) |
+| `0x40` (proposto) | CONFIG | gateway → nó | 15 + 6n B | `seq:u8`, `op:u8`, `flags:u8`, `apply_sf:u16`, `ctr:u32`, `n:u8`, n × (`key:u16`, `value:i32`), `mic:u32` |
+| `0x41` (proposto) | CONFIG_ACK | nó → gateway | 12 + 7n B | `seq:u8`, `status:u8`, `ctr:u32`, `n:u8`, n × (`key:u16`, `status:u8`, `value:i32`), `mic:u32` |
+
+- `op`: `1` SET · `2` GET · `3` REBOOT · `4` ABORT (cancela uma mudança
+  coordenada).
+- `flags`: bit 0 `PERSIST` (grava em NVS) · bit 1 `COORD` (aplica no
+  superquadro `apply_sf`).
+- `n ≤ 8` chaves por quadro: CONFIG ≤ 63 B e CONFIG_ACK ≤ 68 B de payload,
+  dentro dos 127 B do quadro.
+- `ctr`: contador do gateway, sempre crescente. O nó recusa `ctr` ≤ o último
+  aceito (anti-*replay*) e guarda o valor em NVS.
+- `mic`: AES-128-CMAC truncado a 32 bits sobre o cabeçalho MAC e o payload
+  (NIST SP 800-38B). A chave de rede vem do build ou do shell (M8).
+- `status` por chave: `0` ok · `1` chave desconhecida · `2` fora da faixa ·
+  `3` não se aplica ao papel · `4` só leitura · `5` salvo, vale após
+  reinício. `status` global: `6` falha de autenticação · `7` ocupado.
+- A IEEE 802.15.4 tem segurança própria (CCM*, com contador de quadro). O
+  MIC próprio é mais simples e mantém o filtro de quadros em hardware.
+  Migrar para o padrão fica como evolução.
+
+**Entrega na janela de serviço** (logo após o BEACON, nos 4 ms reservados a
+ele):
+
+| t (ms, desde o BEACON) | Evento |
+|------------------------|--------|
+| 0,0 | BEACON, com a lista de pendências |
+| 1,0 | CONFIG (gateway → nó), ~0,25 ms no ar |
+| ≈ 2,1 | CONFIG_ACK em `config_rx + T_reply` |
+| 4,0 | fim da janela; começa o slot da tag 0 |
+
+- **Uma transação por superquadro**, ou seja, até 10 comandos por segundo.
+  O ranging não é afetado, porque os slots das tags não mudam.
+- **Tag:** só escuta o BEACON e os próprios slots. Se o ID dela estiver na
+  lista de pendências, fica em RX na janela de serviço (transmissão
+  indireta, como na IEEE 802.15.4).
+- **Âncora:** já fica em RX entre as rodadas e recebe o CONFIG direto. No
+  M12 ela também acompanha o contador `superframe` dos BEACONs, necessário
+  para a mudança coordenada.
+- **Janela compartilhada com o M9:** nos superquadros com pendência, o
+  ANCHOR_INFO espera o superquadro seguinte.
+
+**Mudança coordenada** (parâmetros que precisam ser iguais em todos os nós):
+
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant G as Gateway
+    participant N as Nós (âncoras e tags)
+    H->>G: CFG_SET_COORD (lista de nós, chave, valor)
+    G->>G: escolhe K = superquadro atual + margem
+    loop um nó por superquadro, até 3 tentativas
+        G->>N: CONFIG (SET, COORD, apply_sf = K)
+        N->>G: CONFIG_ACK (pronto)
+    end
+    alt todos confirmaram antes de K
+        Note over G,N: no superquadro K todos trocam juntos
+    else algum nó faltou
+        G->>N: CONFIG (ABORT) aos que confirmaram
+        G-->>H: estado: cancelado
+    end
+    Note over N: após a troca, 3 BEACONs perdidos →<br/>volta aos valores anteriores (rollback)
+```
+
+- Margem proposta: K = superquadro atual + 3·(nº de nós) + 20 (folga de 2 s).
+- As comparações de `apply_sf` são módulo 2¹⁶: o contador dá a volta a cada
+  ~1,8 h.
+
+**Registro de parâmetros** (proposta inicial; a chave é estável e o nome
+segue o `settings` do M8):
+
+| Chave | Nome | Kconfig equivalente | Papéis | Classe |
+|-------|------|---------------------|--------|--------|
+| `0x0101` | `node/id` | `RTLS_NODE_ID` | todos | com reinício |
+| `0x0102` | `node/pan` | `RTLS_PAN_ID` | todos | coordenada |
+| `0x0201`–`0x0203` | `anchor/pos_{x,y,z}_mm` | `RTLS_ANCHOR_POS_{X,Y,Z}_MM` | âncora | imediata |
+| `0x0301` / `0x0302` | `radio/{tx,rx}_ant_dly` | `RTLS_DW1000_{TX,RX}_ANT_DLY` | todos | imediata |
+| `0x0401` / `0x0402` | `twr/reply_us`, `twr/slot_us` | `RTLS_TWR_REPLY_DELAY_US`, `RTLS_TWR_SLOT_US` | todos | coordenada |
+| `0x0403` | `twr/rx_margin_us` | `RTLS_TWR_RX_MARGIN_US` | tag, âncora | imediata |
+| `0x0404` / `0x0405` | `twr/rsl_corr`, `twr/rsl_gain_db_x10` | `RTLS_TWR_RANGE_BIAS_*` | tag | imediata |
+| `0x0406` | `twr/mode` (0 DS, 1 SS) | `RTLS_TWR_MODE_SS` (M11) | tag | imediata |
+| `0x0501` / `0x0502` | `tag/anchor_base`, `tag/num_anchors` | `RTLS_TAG_ANCHOR_BASE_ID`, `RTLS_TAG_NUM_ANCHORS` | tag | imediata |
+| `0x0601`–`0x0605` | `loc/mode_3d`, `loc/tag_height_mm`, `loc/range_std_mm`, `loc/accel_std_mms2`, `loc/gate_chi2_x100` | `RTLS_LOC_*` | tag | imediata (`mode_3d` reinicia o EKF) |
+| `0xF001`–`0xF003` | `info/fw_version`, `info/uptime_s`, `info/late_tx` | — | todos | só leitura |
+
+- **Fora do registro:**
+  - a PHY, porque o driver só aceita canal 5 / PRF 64 / 128 / 6,8 Mbps;
+  - a potência de TX, porque o valor *smart* atual está amarrado à regra
+    regulatória (APS017);
+  - a taxa de atualização, porque no M7 ela vem do superquadro.
+- **ID do nó:** quem garante a unicidade é o host. O gateway avisa se o ID
+  novo já estiver na tabela de tags.
+- **Alcance:** o gateway precisa alcançar cada nó por UWB diretamente
+  (um salto). Repetição por âncoras fica fora do escopo.

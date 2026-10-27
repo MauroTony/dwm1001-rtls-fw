@@ -54,8 +54,111 @@ slots diferentes de cada âncora. O teste
 arredondamento resultante fica na ordem de $10^{-8}$ tick.
 
 **Viés dependente da potência:** o DW1000 tem um viés de range que varia com
-o nível de sinal recebido (Decawave APS011). No M2 se decide se vale aplicar
-a tabela de correção em função de `rx_power`.
+o nível de sinal recebido (Decawave APS011). A correção por tabela está
+ligada desde o M2 ([§3.1](#31-correção-do-viés-dependente-do-rsl-aps011)).
+
+### 2.1 SS-TWR com compensação do desvio (M11, opcional)
+
+> **Opcional, a implementar.** Protocolo em
+> [03 §8.1](03-protocolo-uwb.md#81-ss-twr-m11); fundamentação em `tcc/04` §9.
+
+Só a primeira perna (POLL → RESP_SS). Sem compensação, o erro é o do
+APS011:
+
+$$
+\widehat{ToF}_{SS} = \frac{R_a - D_b}{2},
+\qquad
+\widehat{ToF}_{SS} - ToF \approx \frac{D_b\,(e_A - e_B)}{2}
+$$
+
+**Estimador compensado:** com $\varepsilon \approx e_B - e_A$ (frequência da
+âncora em relação à da tag), o $D_b$ é levado ao relógio da tag:
+
+$$
+\widehat{ToF} = \frac{R_a - D_b\,(1 - \hat\varepsilon)}{2},
+\qquad
+\text{erro} \approx \frac{D_b\,(\hat\varepsilon - \varepsilon)}{2}
+$$
+
+| Símbolo | Significado |
+|---------|-------------|
+| $R_a$ | `resp_rx − poll_tx`, relógio da tag |
+| $D_b$ | `resp_tx − poll_rx`, relógio da âncora (`resp_tx` previsto) |
+| $e_A$, $e_B$ | erro de frequência da tag e da âncora |
+| $\varepsilon$, $\hat\varepsilon$ | desvio relativo real e estimado |
+| $D_{b,i} = T_{reply} + i\,T_{slot}$ | tempo de resposta da âncora no slot $i$ |
+
+**Orçamento de erro:** $\tfrac12 D_b\,\delta\varepsilon\,c$ dá ~15 cm por ms
+e por ppm de erro na estimativa.
+
+| $\delta\varepsilon$ | Slot 0 (1 ms) | Slot 1 (2 ms) | Slot 2 (3 ms) | Slot 3 (4 ms) |
+|---------------------|---------------|---------------|---------------|---------------|
+| 2 ppm (sem compensação, exemplo) | 30 cm | 60 cm | 90 cm | 120 cm |
+| 1 ppm | 15 cm | 30 cm | 45 cm | 60 cm |
+| 0,1 ppm | 1,5 cm | 3,0 cm | 4,5 cm | 6,0 cm |
+| 10 ppb | 1,5 mm | 3,0 mm | 4,5 mm | 6,0 mm |
+
+Para ficar dentro do critério do M2 em todos os slots, a estimativa precisa
+errar menos que ~0,1 ppm.
+
+**Fonte 1 · integrador de portadora.** O receptor do DW1000 corrige a
+diferença de frequência da portadora e expõe o valor em `DRX_CAR_INT`
+(sub-registrador 0x27:28, 21 bits com sinal). Para 6,8 Mbps no canal 5:
+
+$$
+\hat\varepsilon_{car} = -\,C \cdot \frac{f_s}{2 \cdot 1024 \cdot 2^{17}} \cdot \frac{1}{f_c}
+\approx -0{,}573\ \text{ppb} \times C
+$$
+
+com $f_s$ = 998,4 MHz e $f_c$ = 6489,6 MHz.
+
+- Precisa ser lido junto com o timestamp de RX, antes de religar o RX: o
+  próximo quadro sobrescreve o registrador.
+- As constantes e o sinal precisam ser conferidos no *DW1000 User Manual*
+  e validados em bancada no modo sombra (T11.10). Com o sinal trocado, o erro
+  dobra em vez de cancelar.
+
+**Fonte 2 · razão de timestamps entre rodadas.** Com dois POLLs da mesma
+tag ($j < k$) recebidos pela mesma âncora:
+
+$$
+\hat\varepsilon_{ts} = \frac{t^{B}_{poll,rx}(k) - t^{B}_{poll,rx}(j)}{t^{A}_{poll,tx}(k) - t^{A}_{poll,tx}(j)} - 1
+$$
+
+- As diferenças são módulo 2⁴⁰ (`rtls_dw_ts_diff`). Aceitar só intervalos
+  ≤ 1 s, longe da volta de 17,2 s.
+- A base de 100 ms dilui o ruído do timestamp: ~1 ppb com 0,1 ns de jitter.
+- O movimento da tag soma $v/c$: ~3,3 ppb a 1 m/s, ou ~2 mm no slot 3.
+- Responde devagar a saltos de frequência, como os de ±0,5 ppm no
+  aquecimento do cristal (APS011 §2.2).
+
+**Política** (Kconfig `RTLS_TWR_SS_OFS_SRC_*`, proposta):
+
+| Opção | Comportamento |
+|-------|---------------|
+| `CARRIER` | só a fonte 1 |
+| `TIMESTAMPS` | só a fonte 2; a âncora fica sem distância até ter histórico |
+| `BOTH` (padrão) | fonte 2 quando há histórico; fonte 1 na 1ª rodada, depois de uma lacuna > 1 s ou quando as duas divergem mais que um limiar (salto) |
+
+- Limite de sanidade: \|ε̂\| acima de `RTLS_TWR_SS_OFS_MAX_PPB` descarta a
+  medida e conta como inválida.
+- Filtro exponencial opcional por âncora sobre ε̂, com peso
+  `RTLS_TWR_SS_OFS_ALPHA_X100`. O valor sai da σ medida no T11.11.
+
+**Referência de verdade para o desvio:** no modo sombra (rodando em DS), o
+ToF do DS é praticamente exato. Ele dá o desvio que o SS precisaria:
+
+$$
+\varepsilon_{ref} = 1 - \frac{R_a - 2\,\widehat{ToF}_{DS}}{D_b}
+$$
+
+É ruidoso quadro a quadro (~0,3 ppm a 1 ms, pelo σ da distância), mas não
+enviesado. A média de 1000 rodadas mede o viés de cada fonte com
+~0,01 ppm.
+
+**Implementação:** `double`, como no DS. As funções ficam em `twr_math`,
+sem hardware: `rtls_twr_ss_tof()`, `rtls_twr_ss_ofs_from_carrier()` e
+`rtls_twr_ss_ofs_from_ts()` (nomes provisórios).
 
 ## 3. Calibração do atraso de antena
 

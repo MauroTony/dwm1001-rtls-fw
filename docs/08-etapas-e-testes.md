@@ -1,6 +1,6 @@
 # 08 — Etapas de desenvolvimento e roteiros de teste
 
-Roteiro único do projeto: cada etapa (marcos M0 a M10) traz o que implementar,
+Roteiro único do projeto: cada etapa (marcos M0 a M12) traz o que implementar,
 os testes automatizados, a preparação da bancada, o passo a passo com os
 comandos de build, gravação e captura, e o critério de aceite. Os comandos
 comuns a todas as etapas estão na [seção 2](#2-convenções-e-guia-de-bancada).
@@ -29,6 +29,9 @@ flowchart LR
     M8 -.-> M9["M9<br/>Seleção de âncoras"]:::opt
     M8 -.-> M10["M10<br/>8 âncoras + FDE"]:::opt
     M9 -.-> M10
+    M8 -.-> M11["M11<br/>SS-TWR por flag"]:::opt
+    M8 -.-> M12["M12<br/>Config. remota"]:::opt
+    M11 -.-> M12
     classDef opt fill:#eceff1,stroke:#78909c,color:#111,stroke-dasharray:4 3
 ```
 
@@ -45,6 +48,8 @@ flowchart LR
 | M8 Robustez e avaliação | 📐 | — | campanha do TCC | todas |
 | M9 Descoberta e seleção de âncoras *(opcional)* | 📐 | seleção e tabela (ztest) | 8 âncoras, movimento entre zonas | 10 |
 | M10 Até 8 âncoras + FDE *(opcional)* | 📐 | FDE com falhas sintéticas | NLOS controlado | 10 |
+| M11 SS-TWR por *flag* *(opcional)* | 📐 | SS-TWR, desvio, previsão do TX | modo sombra, SS × DS | 5–6 |
+| M12 Configuração remota *(opcional)* | 📐 | registro, codec, MIC, fila | host → gateway → nós | 9 + host |
 
 **Legenda:** ✅ concluído · 🧪 implementado, falta a bancada · 📐 a implementar
 
@@ -1088,14 +1093,233 @@ posição, anotados na ficha (material, espessura, distância à âncora).
 
 ---
 
-## 14. Outras etapas opcionais (ainda não planejadas)
+## 14. M11 — Modo SS-TWR selecionável por *flag* 📐 *(opcional)*
+
+**Objetivo:** o sistema inteiro funcionar também com SS-TWR (POLL_SS +
+RESP_SS), com o modo escolhido por uma *flag* na tag e o desvio de relógio
+compensado. O DS continua o padrão.
+**Depende de:** M3 (e do M4 só para o T11.17). Entra no fim do projeto, se
+houver tempo. Algoritmo em
+[04 §2.1](04-algoritmos.md#21-ss-twr-com-compensação-do-desvio-m11-opcional);
+protocolo em [03 §8.1](03-protocolo-uwb.md#81-ss-twr-m11).
+
+### Implementação
+
+- [ ] Kconfig: `RTLS_TWR_SS` (suporte, padrão `y`), escolha `RTLS_TWR_MODE_DS` / `RTLS_TWR_MODE_SS` (tag), `RTLS_TWR_SS_OFS_SRC_*`, `RTLS_TWR_SS_OFS_MAX_PPB`, `RTLS_TWR_SS_OFS_ALPHA_X100`, `RTLS_TWR_SS_SHADOW`
+- [ ] quadros `POLL_SS` e `RESP_SS` com `BUILD_ASSERT`; testes de codec; `docs/03`
+- [ ] driver: `dw1000_predict_tx_ts()` e leitura do `DRX_CAR_INT` em `dw1000_rx_info`
+- [ ] responder: atende POLL e POLL_SS; contador `TX previsto != real`
+- [ ] `twr_math`: ToF SS compensado, conversão do integrador, razão de timestamps, política `BOTH`
+- [ ] initiator SS; modo sombra no DS
+- [ ] CSV: colunas opcionais `ofs_ppb` e `ss_mm`; `tools/rtls_log.py stats` com o desvio e a diferença SS − DS
+- [ ] modo no boot (`RTLS tag 0x1001: ..., TWR SS`) e no resumo de 10 s
+
+### Testes automatizados
+
+| ID | Caso | Esperado |
+|----|------|----------|
+| T11.1 | SS com ε exato (±20 ppm, $D_b$ de 1 a 4 ms) | erro < 1 mm |
+| T11.2 | SS sem compensação, mesmos casos | erro = $\tfrac12 D_b(e_A - e_B)\,c$, com tolerância de 1 % |
+| T11.3 | ToF SS e razão de timestamps atravessando a volta de 2⁴⁰ | mesmo resultado que longe da volta |
+| T11.4 | previsão do TX (9 LSBs zerados + atraso de antena), inclusive na volta | igual ao valor de referência |
+| T11.5 | conversão do `DRX_CAR_INT`: sinal dos 21 bits e escala | valores de referência; ±2²⁰ sem estouro |
+| T11.6 | razão de timestamps com rodadas perdidas e tag a 1 m/s | \|δε\| ≤ 5 ppb |
+| T11.7 | política `BOTH` com salto de 0,5 ppm na frequência | troca para a portadora na mesma rodada |
+| T11.8 | codec: POLL_SS 11 B e RESP_SS 25 B; despacho pelo tipo na âncora | tamanhos e despacho corretos |
+
+```bash
+# T11.1-T11.8: Linux/WSL
+west twister -T tests -p native_sim -v
+```
+
+### Preparação da bancada
+
+Montagem do M3 (4 âncoras + tag), com as âncoras **regravadas** com o
+firmware do M11, que atende os dois modos. Use o laço da
+[seção 2.6](#26-gravar). A tag ganha uma pasta de build por modo:
+
+| Build | Pasta | Comando |
+|-------|-------|---------|
+| DS + modo sombra | `build/tag_shadow` | `west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag_shadow -- -DEXTRA_CONF_FILE=nodes/t1.conf -DCONFIG_RTLS_TWR_SS_SHADOW=y` |
+| DS + sombra, 1 âncora | `build/tag_shadow1` | idem, com `-DCONFIG_RTLS_TAG_NUM_ANCHORS=1` |
+| SS | `build/tag_ss` | `west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag_ss -- -DEXTRA_CONF_FILE=nodes/t1.conf -DCONFIG_RTLS_TWR_MODE_SS=y` |
+| SS, 1 âncora | `build/tag_ss1` | idem, com `-DCONFIG_RTLS_TAG_NUM_ANCHORS=1` |
+| SS, só portadora | `build/tag_ss_car` | `tag_ss` + `-DCONFIG_RTLS_TWR_SS_OFS_SRC_CARRIER=y` |
+| SS, só timestamps | `build/tag_ss_ts` | `tag_ss` + `-DCONFIG_RTLS_TWR_SS_OFS_SRC_TIMESTAMPS=y` |
+| A1 respondendo no slot 3 | `build/anchor_a1_s3` | `west build -p always -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1_s3 -- -DEXTRA_CONF_FILE=nodes/a1.conf -DCONFIG_RTLS_NODE_ID=0xA004` |
+
+- Trocar de modo é regravar **só a tag**: `west flash -d build/tag_ss --dev-id $T1`.
+- O `anchor_a1_s3` mantém a posição e os atrasos da placa A1, mas responde
+  como A4 (slot 3). Use com a A4 verdadeira desligada.
+- **Aquecimento:** deixe todas as placas ligadas por 10 min antes de medir,
+  exceto no T11.11.
+
+### Roteiro de bancada
+
+| ID | Passo | Esperado |
+|----|-------|----------|
+| T11.9 | Âncoras com o firmware do M11, tag em `tag_ss`, 10 min | `TX previsto != real` = 0 em todas as âncoras |
+| T11.10 | Modo sombra, 1 âncora a 5,0 m, 10 min | com a compensação, \|média(SS − DS)\| ≤ 2 cm; sem ela, a diferença acompanha $\tfrac12 D_b\,\varepsilon_{ref}$ (confirma sinal e escala) |
+| T11.11 | Modo sombra; ligue a tag e capture os 10 primeiros minutos | σ de ε̂ por fonte e curva de aquecimento registradas |
+| T11.12 | Modo sombra, 4 âncoras, 10 min | \|média(SS − DS)\| ≤ 2 cm em cada slot (0 a 3) |
+| T11.13 | SS real, 1 âncora, a 1,0 / 3,0 / 5,0 m | \|viés\| ≤ 10 cm e σ ≤ 5 cm (critério do M2) |
+| T11.14 | SS real: a mesma placa no mesmo ponto, no slot 0 (A1) e no slot 3 (`anchor_a1_s3`) | diferença de viés ≤ 3 cm |
+| T11.15 | SS real, 4 âncoras, 10 min | rodada ≤ 5 ms; ≥ 95 % de rodadas completas; `TX atrasado 0` |
+| T11.16 | Mesmo ponto com `tag_ss_car`, `tag_ss_ts` e `tag_ss` | viés e σ por slot de cada fonte (E9) |
+| T11.17 | *(com o M4)* SS × DS no mesmo ponto da grade | RMSE de posição dos dois modos (E9) |
+| T11.18 | Regressão: T2.4 e T3.2 em DS com as âncoras do M11 | aprovam como antes |
+
+```bash
+# T11.9: o contador aparece no resumo de 10 s da âncora (a implementar no M11)
+python -m serial.tools.miniterm <COM de A1> 115200
+#   âncora: TWR: POLL 100, RESP 0, RESP_SS 100, ..., TX previsto != real 0
+
+# T11.10 e T11.11: tag em modo sombra com 1 âncora
+west flash -d build/tag_shadow1 --dev-id $T1
+python tools/rtls_log.py capture --port <COM de T1> --out captures/T11.10_5m.csv --seconds 600 --echo
+python tools/rtls_log.py stats captures/T11.10_5m.csv --true-distance 5.0
+# com as colunas novas, o stats mostra também: ofs ppb (média, σ) e ss-ds mm (média, σ)
+
+# T11.12: 4 âncoras
+west flash -d build/tag_shadow --dev-id $T1
+python tools/rtls_log.py capture --port <COM de T1> --out captures/T11.12_centro.csv --seconds 600 --echo
+
+# T11.13: SS real, uma captura por distância
+west flash -d build/tag_ss1 --dev-id $T1
+python tools/rtls_log.py capture --port <COM de T1> --out captures/T11.13_5m.csv --seconds 110
+python tools/rtls_log.py stats captures/T11.13_5m.csv --true-distance 5.0
+
+# T11.14: A1 no slot 3 (desligue a A4 verdadeira); a tag consulta 4 âncoras
+west flash -d build/tag_ss --dev-id $T1
+west flash -d build/anchor_a1_s3 --dev-id $A1
+python tools/rtls_log.py capture --port <COM de T1> --out captures/T11.14_slot3.csv --seconds 110
+# depois regrave a A1 normal (build/anchor_a1) e repita como T11.14_slot0
+
+# T11.15: rodada SS; o resumo da tag mostra a duração
+python tools/rtls_log.py capture --port <COM de T1> --out captures/T11.15_centro.csv --seconds 600 --echo
+#   tag: TWR SS: 100 rodadas, 98% completas, ultima 4250 us, max 4300 us, TX atrasado 0
+```
+
+### Critério de aceite
+
+- [ ] T11.9 (zero divergências), T11.10 e T11.12
+- [ ] T11.13 e T11.14
+- [ ] T11.15 e T11.18
+- [ ] T11.1–T11.8 em `native_sim`
+
+### Registrar
+
+- `captures/T11.*.csv` e o `stats` de cada um.
+- Temperatura ambiente e tempo desde que as placas foram ligadas.
+- Para o TCC (E9): tabela SS × DS por slot e por fonte de desvio, curva de
+  aquecimento (T11.11) e tempo de rodada.
+
+---
+
+## 15. M12 — Configuração remota pelo gateway 📐 *(opcional)*
+
+**Objetivo:** o host altera parâmetros de qualquer tag ou âncora pela SPI,
+e o gateway entrega por UWB, com confirmação, persistência e autenticação.
+**Depende de:** M6, M7 e M8 (integra com o M11). Entra no fim do projeto, se
+houver tempo. Protocolo em [03 §8.2](03-protocolo-uwb.md#82-configuração-remota-m12);
+SPI em [05 §7](05-interface-spi-gateway.md#7-extensões-planejadas-m12-opcional).
+
+### Implementação
+
+- [ ] registro de parâmetros único (shell do M8 e UWB): chave, faixa, papéis, classe
+- [ ] quadros `CONFIG` e `CONFIG_ACK`; BEACON com lista de pendências
+- [ ] nó: valida, aplica (imediata, coordenada, com reinício), `PERSIST` em NVS, responde com o valor atual
+- [ ] gateway: fila estática de comandos, tentativas, janela de serviço; comandos locais para `0x0001`
+- [ ] SPI: `CFG_SET`, `CFG_SET_COORD`, `CFG_GET`, `CFG_STATUS`, `NODE_REBOOT`
+- [ ] mudança coordenada em duas fases (`apply_sf`, `ABORT`) e *rollback* após 3 BEACONs perdidos
+- [ ] MIC AES-128-CMAC de 4 B e contador anti-*replay* (`RTLS_CFG_AUTH`)
+- [ ] host de referência: `cfg-set`, `cfg-get` e `cfg-status` no script de host do M6 (`tools/rtls_host.py`, nome provisório)
+- [ ] logs `CFG: ...` no nó e CSV `C,cmd_id,node,state,key,status,value` no gateway
+
+### Testes automatizados
+
+| ID | Caso | Esperado |
+|----|------|----------|
+| T12.1 | registro: valor fora da faixa, chave desconhecida, papel errado, só leitura | status 2 / 1 / 3 / 4; valor antigo mantido |
+| T12.2 | codec: CONFIG e CONFIG_ACK com n = 1 e n = 8; BEACON com 0 e 4 pendências | tamanhos de [03 §8.2](03-protocolo-uwb.md#82-configuração-remota-m12); quadro ≤ 127 B |
+| T12.3 | AES-CMAC com os vetores de teste do NIST SP 800-38B | MIC igual ao de referência |
+| T12.4 | MIC errado; `ctr` repetido ou menor que o último aceito | recusado (status 6) |
+| T12.5 | `apply_sf` perto da volta de 2¹⁶ | troca no superquadro certo |
+| T12.6 | fila do gateway: cheia, timeout, 3 tentativas, `ABORT` | estados e status de [05 §7](05-interface-spi-gateway.md#7-extensões-planejadas-m12-opcional) |
+| T12.7 | TLV SPI malformado (`n` > 8, `len` incoerente) | envelope com status 2, sem travar |
+
+### Preparação da bancada
+
+Sistema do M7 completo (4 âncoras, 4 tags, gateway) com o host do M6 ligado
+ao gateway. Todos os nós com o firmware do M12. Na primeira gravação,
+`--erase` zera o NVS e o contador anti-*replay*:
+
+```bash
+west flash -d build/anchor_a1 --dev-id $A1 --erase   # repita em todos os nós
+```
+
+- A chave de rede de bancada vai num fragmento comum a todos os nós (ex.:
+  `nodes/cfg_key.conf`, **fora do git**) ou é provisionada pelo shell (M8).
+- O host roda o script de referência; os comandos abaixo são a interface
+  prevista.
+
+### Roteiro de bancada
+
+| ID | Passo | Esperado |
+|----|-------|----------|
+| T12.8 | `cfg-get` de `info/fw_version` numa âncora e numa tag | resposta em ≤ 1 s |
+| T12.9 | `cfg-set` de `anchor/pos_x_mm` da A1 sem `PERSIST`, com a tag rodando | ACK ok em ≤ 1 s; o REPORT seguinte já traz a posição nova; após reset, volta ao valor antigo |
+| T12.10 | Mesmo `cfg-set`, com `PERSIST`; reinicie a A1 | o valor novo aparece no boot |
+| T12.11 | `cfg-set` de `loc/gate_chi2_x100` numa tag (e de `twr/mode`, se houver M11) | vale na rodada seguinte, sem rodada perdida |
+| T12.12 | Valor fora da faixa, chave de outro papel, chave desconhecida | recusados com o status certo; nada muda no nó |
+| T12.13 | Gateway em modo de teste: MIC errado e um CONFIG antigo repetido | 100 % recusados; contador de falhas sobe no nó |
+| T12.14 | `cfg-set-coord` de `twr/reply_us` 1000 → 1200 em todos os nós e depois de volta para 1000 | todos trocam no mesmo superquadro; no máximo 1 rodada perdida por tag |
+| T12.15 | Repita o T12.14 com uma âncora desligada | `ABORT`: nenhum nó troca; estado "cancelado" no host |
+| T12.16 | Gateway em modo de teste: força uma âncora a trocar sozinha | ela perde a rede e volta ao valor anterior em ≤ 3 s |
+| T12.17 | Comando para um nó inexistente | timeout após 3 tentativas; os outros comandos da fila seguem |
+| T12.18 | 1 comando por superquadro durante 10 min, com 4 tags | critérios do M7 (T7.3) mantidos |
+
+```bash
+# T12.8-T12.10: host de referência (a implementar no M6/M12)
+python tools/rtls_host.py cfg-get --node 0xA001 --key info/fw_version
+python tools/rtls_host.py cfg-set --node 0xA001 --key anchor/pos_x_mm --value 1500
+python tools/rtls_host.py cfg-set --node 0xA001 --key anchor/pos_x_mm --value 1500 --persist
+west reset -d build/anchor_a1 --dev-id $A1           # com o console da A1 aberto
+#   <inf> anchor: RTLS ancora 0xa001 em (1500, 0, 2500) mm
+
+# T12.14: mudança coordenada; o host acompanha o estado de cada nó
+python tools/rtls_host.py cfg-set-coord --nodes 0xA001-0xA004,0x1001-0x1004 --key twr/reply_us --value 1200
+python tools/rtls_host.py cfg-status --cmd <cmd_id> --all
+python tools/rtls_host.py cfg-set-coord --nodes 0xA001-0xA004,0x1001-0x1004 --key twr/reply_us --value 1000
+```
+
+> [!WARNING]
+> No T12.14 o valor de 1200 µs é temporário e serve só para exercitar o
+> mecanismo. Ao final, todos os nós precisam voltar a 1000 µs: a meta do M7
+> continua com os tempos de 1 ms (decisão de 25/10/2026).
+
+### Critério de aceite
+
+- [ ] T12.8, T12.9 e T12.10 (ida e volta ≤ 1 s; persistência)
+- [ ] T12.12 e T12.13 (100 % recusados)
+- [ ] T12.14 e T12.15 em 10/10 tentativas; T12.16 em ≤ 3 s
+- [ ] T12.18 sem degradar o M7
+- [ ] T12.1–T12.7 em `native_sim`
+
+### Registrar
+
+- Latência host → nó → host de cada comando (média e máximo) e taxa de
+  sucesso.
+- Para o TCC (E10): latência de reconfiguração e impacto no ranging.
+
+---
+
+## 16. Outras etapas opcionais (ainda não planejadas)
 
 Dependem de decisão do usuário antes de entrar no plano.
 
 | Proposta | Esforço | Valor para o TCC |
 |----------|---------|------------------|
-| SS-TWR nível 1: calcular SS (bruto e corrigido pelo integrador de portadora) na mesma rodada do DS | baixo | comparação pareada de precisão SS × DS |
-| SS-TWR nível 2: modo SS real, comutável em tempo real pelo POLL | médio | comparação de tempo de rodada e capacidade |
 | `tools/rtls_log.py --reference` (Δ = 2b contra placa calibrada) | baixo | calibração em série das demais placas |
 | CI no GitHub Actions (build + `native_sim`) | baixo | testes unitários executados a cada push |
 | GPIO de debug para o analisador lógico | baixo | mede latências (T5.2, T6.6) com instrumento |
