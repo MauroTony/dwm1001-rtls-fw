@@ -11,6 +11,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/timing/timing.h>
 
 #include <rtls/dw1000.h>
 #include <rtls/frames.h>
@@ -24,6 +25,10 @@ LOG_MODULE_REGISTER(tag, LOG_LEVEL_INF);
 
 static struct rtls_loc_ctx loc;
 static uint8_t mac_seq;
+
+/* Tempo de rtls_loc_update() desde o último resumo (T4.9). */
+static uint32_t loc_last_us;
+static uint32_t loc_max_us;
 
 static int32_t m_to_mm(float m)
 {
@@ -81,12 +86,42 @@ static void print_ranges(const struct rtls_range_set *set)
 	}
 }
 
+/* Uma linha CSV por posição estimada (mm; flags = RTLS_POS_FLAG_*). */
+static void print_position(const struct rtls_position *pos, uint8_t round)
+{
+	if (!IS_ENABLED(CONFIG_RTLS_TAG_CSV_OUTPUT)) {
+		return;
+	}
+
+	printk("L,%u,%u,%d,%d,%d,%u,%u,%u,%u,%u\n", round, (uint32_t)pos->t_ms,
+	       m_to_mm(pos->pos_m[0]), m_to_mm(pos->pos_m[1]), m_to_mm(pos->pos_m[2]),
+	       std_to_mm(pos->std_m[0]), std_to_mm(pos->std_m[1]), std_to_mm(pos->std_m[2]),
+	       pos->n_ranges, pos->flags);
+}
+
+/* rtls_loc_update() com o tempo de execução medido pela API de timing. */
+static int timed_loc_update(const struct rtls_range_set *set, struct rtls_position *pos)
+{
+	timing_t t0, t1;
+	int err;
+
+	t0 = timing_counter_get();
+	err = rtls_loc_update(&loc, set, pos);
+	t1 = timing_counter_get();
+
+	loc_last_us = (uint32_t)(timing_cycles_to_ns(timing_cycles_get(&t0, &t1)) / 1000U);
+	loc_max_us = MAX(loc_max_us, loc_last_us);
+	return err;
+}
+
 static void log_stats(void)
 {
 	struct rtls_twr_initiator_stats st;
+	struct rtls_loc_stats ls;
 	uint32_t pct;
 
 	rtls_twr_initiator_get_stats(&st, true);
+	rtls_loc_get_stats(&loc, &ls, true);
 	if (st.rounds == 0) {
 		return;
 	}
@@ -100,6 +135,10 @@ static void log_stats(void)
 			CONFIG_RTLS_TAG_ANCHOR_BASE_ID + i, st.anchors[i].resp_ok,
 			st.anchors[i].range_ok, pct, st.anchors[i].invalid);
 	}
+	LOG_INF("LOC: %u posicoes, %u aceitas, %u rejeitadas, %u reinicios, "
+		"EKF ultimo %u us, max %u us",
+		ls.updates, ls.accepted, ls.rejected, ls.resets, loc_last_us, loc_max_us);
+	loc_max_us = 0;
 }
 
 int main(void)
@@ -112,7 +151,6 @@ int main(void)
 		.n_anchors = CONFIG_RTLS_TAG_NUM_ANCHORS,
 	};
 	struct rtls_loc_cfg loc_cfg;
-	bool loc_warned = false;
 	int64_t next_ms, next_stats_ms;
 	int err;
 
@@ -150,6 +188,12 @@ int main(void)
 		return 0;
 	}
 
+	timing_init();
+	timing_start();
+	LOG_INF("LOC %dD: sigma_r %d mm, sigma_a %d mm/s2, gating %d/100, z fixo (2D) %d mm",
+		loc_cfg.dim, CONFIG_RTLS_LOC_RANGE_STD_MM, CONFIG_RTLS_LOC_ACCEL_STD_MMS2,
+		CONFIG_RTLS_LOC_GATE_CHI2_X100, CONFIG_RTLS_LOC_TAG_HEIGHT_MM);
+
 	next_ms = k_uptime_get();
 	next_stats_ms = next_ms + CONFIG_RTLS_TAG_STATS_PERIOD_S * 1000;
 	while (true) {
@@ -163,12 +207,11 @@ int main(void)
 			rtls_status_led_activity();
 			print_ranges(&ranges);
 
-			err = rtls_loc_update(&loc, &ranges, &pos);
+			/* -EAGAIN: sem posição até ter distâncias para a multilateração */
+			err = timed_loc_update(&ranges, &pos);
 			if (err == 0) {
+				print_position(&pos, ranges.round);
 				err = send_position(&pos, ranges.round);
-			} else if (err == -ENOSYS && !loc_warned) {
-				LOG_WRN("localizacao (EKF, M4) ainda nao implementada");
-				loc_warned = true;
 			}
 		}
 

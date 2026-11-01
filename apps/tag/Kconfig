@@ -23,13 +23,15 @@ config RTLS_TAG_NUM_ANCHORS
 	range 1 4
 
 config RTLS_TAG_CSV_OUTPUT
-	bool "Imprime cada distância em CSV na UART"
+	bool "Imprime cada distância e cada posição em CSV na UART"
 	default y
 	help
 	  Uma linha por distância: R,<round>,<t_ms>,<ancora>,<dist_mm>,
 	  <rx_power_cdbm>,<fp_power_cdbm>,<raw_mm>, onde dist_mm é a distância
 	  final (corrigida por RSL, se habilitado) e raw_mm é o DS-TWR antes da
-	  correção. Lida por tools/rtls_log.py.
+	  correção. Uma linha por posição do EKF: L,<round>,<t_ms>,<x_mm>,
+	  <y_mm>,<z_mm>,<sx_mm>,<sy_mm>,<sz_mm>,<n_ranges>,<flags>. Lidas por
+	  tools/rtls_log.py.
 
 config RTLS_TAG_STATS_PERIOD_S
 	int "Período do resumo de estatísticas do TWR (s; 0 desliga)"
