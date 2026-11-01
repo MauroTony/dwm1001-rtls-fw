@@ -42,7 +42,7 @@ flowchart LR
 | M2 DS-TWR 1×1 + calibração | 🧪 | `twr_math`, `frames` | ranging + calibração | 2–3 |
 | M3 DS-TWR 1×4 a 10 Hz | 🧪 | — | 4 âncoras + tag | 5 |
 | M4 Localização (EKF) | 🧪 (M4a ✅) | `loc`, `loc_mat` (T4.1–T4.7, T4.12–T4.14) | grade de pontos | 5 |
-| M5 Tag → gateway | 📐 | — | entrega das posições | 6 |
+| M5 Tag → gateway | 🧪 | lacunas de `round` (T5.0) | entrega das posições | 6 |
 | M6 SPI → host | 📐 | codec TLV, CRC | host lendo a tabela | 6 + host |
 | M7 Multi-tag (TDMA) | 📐 | — | 4 tags simultâneas | 9 |
 | M8 Robustez e avaliação | 📐 | — | campanha do TCC | todas |
@@ -248,7 +248,7 @@ python -m serial.tools.miniterm /dev/ttyACM0 115200    # Linux
 |----|-----------------------|--------|
 | Tag | `<inf> tag: RTLS tag 0x1001: 10 Hz, 4 ancoras a partir de 0xa001` e `<inf> tag: LOC 2D: sigma_r ...` | linhas `R,...` a 10 Hz e, com ≥ 3 âncoras, `L,...`; resumo `TWR: ...` e `LOC: ...` a cada 10 s |
 | Âncora | `<inf> anchor: RTLS ancora 0xa001 em (0, 0, 2500) mm` | resumo `TWR: POLL ...` a cada 10 s |
-| Gateway | `<inf> gateway: RTLS gateway 0x0001: ate 16 tags` | — |
+| Gateway | `<inf> gateway: RTLS gateway 0x0001: ate 16 tags` | uma linha `P,...` por POSITION; resumo `GW: ...` por tag a cada 10 s (`GW: nenhuma tag ativa` sem tags) |
 | Ping/pong | `<inf> pingpong: UWB ping-pong: ...` | resumo a cada 100 pings |
 
 **LEDs:** verde piscando = firmware vivo · azul alternando = atividade UWB ·
@@ -297,7 +297,24 @@ python tools/rtls_log.py pos captures/T4.10_p1_pos.csv --true-pos 2.0,3.0 --skip
 | `sig.EKF` | média do σ que o próprio EKF declarou; perto do `desvio` = filtro consistente |
 | `viés` / `RMSE 2D` / `CEP50` / `CEP95` | só com `--true-pos x,y[,z]` (m); CEP é o raio que contém 50 % / 95 % dos erros horizontais |
 
-`--skip N` descarta as N primeiras posições (convergência do filtro).
+`--skip N` descarta as N primeiras posições (convergência do filtro). O
+`pos` lê também o CSV do gateway (`_gw.csv`); com várias tags, escolha uma
+com `--tag 1001`.
+
+**Gateway (a partir do M5).** Capturando a UART do gateway, as linhas `P,...`
+vão para `<arquivo>_gw.csv`. O subcomando `gw` resume a entrega por tag:
+
+```bash
+python tools/rtls_log.py gw captures/T5.1_gw.csv --sent captures/T5.1_tag_pos.csv
+```
+
+| Campo | Significado |
+|-------|-------------|
+| `n` / `s` / `Hz` | POSITION recebidos, duração e taxa |
+| `lacunas` / `recebidas` | rodadas sem POSITION pela sequência de `round` / `n` ÷ (`n` + lacunas) |
+| `maior int.` | maior intervalo entre dois POSITION no gateway |
+| `RX dBm` / `1º cam.` | potência média do POSITION no gateway |
+| `enviadas ... recebidas` | só com `--sent`: cruza com as linhas `L,...` da tag pelo `t_ms`, no trecho em que as duas capturas se sobrepõem. É a entrega exata, porque o `round` avança também nas rodadas em que a tag não envia nada |
 
 ### 2.9 Condições de medida
 
@@ -816,7 +833,7 @@ Erro por ponto da grade, CEP50/95, NEES e comparação EKF × LS (E7).
 
 ---
 
-## 8. M5 — Retorno da posição (tag → gateway) 📐
+## 8. M5 — Retorno da posição (tag → gateway) 🧪
 
 **Objetivo:** todas as posições da tag chegando ao gateway.
 **Depende de:** M4.
@@ -824,7 +841,15 @@ Erro por ponto da grade, CEP50/95, NEES e comparação EKF × LS (E7).
 ### Implementação
 
 - [x] quadro `POSITION`, `send_position()` na tag, tabela de tags no gateway
-- [ ] CSV de posições no gateway (`P,tag,round,x,y,z,...`) e contagem de lacunas por `round` *(a implementar)*
+- [x] CSV de posições no gateway (`P,tag,round,t_ms,x,y,z,sx,sy,sz,n,flags,rx_cdbm,fp_cdbm,gw_ms`)
+- [x] contagem de lacunas por `round` (`rtls_round_tracker_update()`) e resumo `GW:` de 10 s
+- [x] `rtls_log.py gw` (com `--sent` para a entrega exata) e `pos --tag` no CSV do gateway
+
+### Testes automatizados
+
+| ID | Caso | Esperado |
+|----|------|----------|
+| T5.0 | rastreador de `round` (ztest, suíte `frames`) | lacunas certas, volta em 256, repetido rejeitado, reinício da tag sem perdas |
 
 ### Preparação da bancada
 
@@ -843,17 +868,20 @@ west flash -d build/gateway --dev-id $GW --erase
 
 | ID | Passo | Esperado |
 |----|-------|----------|
-| T5.1 | 1 tag + gateway, 10 min a 10 Hz | ≥ 99 % das posições recebidas (lacunas de `round`) |
+| T5.1 | 1 tag + gateway, 10 min a 10 Hz, capturando os dois ao mesmo tempo | ≥ 99 % das posições enviadas recebidas (`gw --sent`) |
 | T5.2 | Latência POLL → gateway | ≤ 15 ms; método a definir (GPIO de debug + analisador, *a implementar*) |
 | T5.3 | Desligue a tag | entrada expira em 2 s (`CONFIG_RTLS_GATEWAY_TAG_TIMEOUT_MS`) |
 | T5.4 | 2 tags sem TDMA | ambas aparecem; perdas registradas como referência para o M7 |
 
 ```bash
-# T5.1: CSV P,... no console do gateway; a captura e a contagem de lacunas
-# entram no rtls_log.py no M5 (a implementar)
-python -m serial.tools.miniterm <COM do GW> 115200
+# T5.1: duas capturas simultâneas de 10 min, uma em cada terminal
+python tools/rtls_log.py capture --port <COM de T1> --out captures/T5.1_tag.csv --seconds 600
+python tools/rtls_log.py capture --port <COM do GW> --out captures/T5.1.csv --seconds 600
+#   -> captures/T5.1_tag.csv + T5.1_tag_pos.csv (tag) e captures/T5.1_gw.csv (gateway)
+python tools/rtls_log.py gw captures/T5.1_gw.csv --sent captures/T5.1_tag_pos.csv
 
-# T5.3: tire o USB da tag e cronometre até a entrada sumir do log do gateway
+# T5.3: tire o USB da tag; a tag some do resumo GW: (vira "nenhuma tag ativa")
+# no primeiro resumo depois de 2 s
 
 # T5.4: segunda tag com outro ID (crie apps/tag/nodes/t2.conf com os atrasos dela)
 west build -b decawave_dwm1001_dev apps/tag -d build/tag_t2 -- -DCONFIG_RTLS_NODE_ID=0x1002 "-DEXTRA_CONF_FILE=nodes/t2.conf"

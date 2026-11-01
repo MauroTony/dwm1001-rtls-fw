@@ -51,7 +51,9 @@ flowchart LR
 1. A tag mede a distância até as 4 âncoras a 10 Hz e corrige o viés por RSL.
 2. O EKF estima a posição; a tag imprime distâncias e posições em CSV e envia
    o POSITION ao gateway.
-3. O envio ao host (M6) ainda não existe.
+3. O gateway mantém a tabela de tags, imprime cada POSITION em CSV e conta as
+   lacunas de `round` por tag.
+4. O envio ao host (M6) ainda não existe.
 
 ### 1.2 Camadas do firmware
 
@@ -122,7 +124,7 @@ flowchart TB
 |---------|----------|----------|
 | [`apps/tag`](../apps/tag) | laço de 10 Hz: DS-TWR → CSV → EKF → POSITION | 🧪 |
 | [`apps/anchor`](../apps/anchor) | responder DS-TWR; `nodes/a1..a4.conf` por âncora | 🧪 |
-| [`apps/gateway`](../apps/gateway) | RX de POSITION, tabela de tags, publicação ao host | 🧪 (host 📐) |
+| [`apps/gateway`](../apps/gateway) | RX de POSITION, tabela de tags, CSV e lacunas por tag, publicação ao host | 🧪 (host 📐) |
 | [`drivers/dw1000`](../drivers/dw1000) | driver próprio do DW1000 + mapa de registradores | 🧪 |
 | [`lib/twr`](../lib/twr) | motor DS-TWR e matemática | 🧪 / ✅ |
 | [`lib/proto`](../lib/proto) | montagem e validação de quadros | ✅ |
@@ -131,7 +133,7 @@ flowchart TB
 | [`lib/common`](../lib/common) | LEDs de status | 🧪 |
 | [`include/rtls`](../include/rtls) | headers públicos de todas as bibliotecas | — |
 | [`samples/uwb_pingpong`](../samples/uwb_pingpong) | bancada do driver (M1) | 🧪 |
-| [`tests/unit`](../tests/unit) | 28 testes ztest | ✅ |
+| [`tests/unit`](../tests/unit) | 29 testes ztest | ✅ |
 | [`tools/rtls_log.py`](../tools/rtls_log.py) | captura CSV, estatística de distâncias e posições, calibração de antena | ✅ |
 | [`scripts/`](../scripts) | setup Windows/Linux, ativação, lista de placas | ✅ |
 
@@ -243,6 +245,7 @@ RTLS), monta e valida quadros.
 | `rtls_frame_build()` | cabeçalho + carga → buffer | idem |
 | `rtls_frame_parse()` | valida FC, PAN e tamanho; retorna o tipo | `twr_recv()`, gateway, ping-pong |
 | `rtls_msg_size()` | tamanho da carga por tipo | `rtls_frame_parse()` |
+| `rtls_round_tracker_update()` | conta as rodadas sem POSITION pela sequência de `round` (volta em 256); `t_ms` repetido = duplicado, `t_ms` menor = tag reiniciou | `tag_table.c` do gateway |
 
 ---
 
@@ -405,16 +408,30 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    rx["dw1000_receive()<br/>(espera até o próximo snapshot)"] --> h["handle_frame():<br/>rtls_frame_parse()"]
-    h -- POSITION --> up["tag_table_update()"]
+    rx["dw1000_receive()<br/>(espera até o próximo snapshot)"]:::bench --> h["handle_frame():<br/>rtls_frame_parse()"]:::ok
+    h -- POSITION --> up["tag_table_update()<br/>+ rtls_round_tracker_update()"]:::bench --> csv["print_position()<br/>CSV P,..."]:::bench
     rx --> t{"100 ms?"}
-    t -- sim --> snap["tag_table_snapshot()<br/>(expira tags > 2 s)"] --> pub["rtls_host_if_publish() 📐"]
+    t -- sim --> snap["tag_table_snapshot()<br/>(expira tags > 2 s)"]:::bench --> pub["rtls_host_if_publish() 📐"]:::stub
+    rx --> s10{"10 s?"}
+    s10 -- sim --> ls["log_stats()<br/>GW: recebidas · lacunas · RX"]:::bench
+    classDef ok fill:#d4edda,stroke:#2e7d32,color:#111
+    classDef bench fill:#fff3cd,stroke:#b8860b,color:#111
+    classDef stub fill:#eceff1,stroke:#78909c,color:#111,stroke-dasharray:4 3
 ```
 
 | Função | O que faz |
 |--------|-----------|
-| `tag_table_update()` | insere ou atualiza a tag (posição, σ, RSSI, rodada) |
-| `tag_table_snapshot()` | copia as entradas ativas com a idade e remove as expiradas |
+| `tag_table_update()` | insere ou atualiza a tag (posição, σ, RSSI, rodada) e conta as lacunas de `round`; ignora POSITION repetido |
+| `tag_table_snapshot()` | copia as entradas ativas com a idade e remove as expiradas (a sequência de `round` recomeça se a tag voltar) |
+| `tag_table_get_stats()` | recebidas, lacunas e soma da potência por tag desde o último resumo |
+| `print_position()` | uma linha `P,tag,round,t_ms,x,y,z,sx,sy,sz,n,flags,rx_cdbm,fp_cdbm,gw_ms` por POSITION |
+| `log_stats()` | resumo de 10 s: `GW: tag 0x1001: N posicoes, M lacunas (x% recebidas), RX d dBm` |
+
+> [!NOTE]
+> Lacuna de `round` não é sempre quadro perdido: o `round` da tag avança
+> também nas rodadas sem posição (sem distâncias ou com o filtro
+> inicializando). A entrega exata sai de `rtls_log.py gw --sent`, que cruza o
+> CSV do gateway com as linhas `L,...` da tag pelo `t_ms`.
 
 ### 2.11 Bancada do driver · `samples/uwb_pingpong` 🧪
 
@@ -427,9 +444,12 @@ Valida o driver isoladamente (M1).
 | Suíte | Testes | Cobre |
 |-------|--------|-------|
 | `twr_math` | 11 | wrap de 40 bits, DS-TWR ideal e com ±20 ppm, intervalos, conversões de tempo, slots, RSL por Friis, tabela de viés, distância corrigida |
-| `frames` | 4 | montagem/parse, rejeição de PAN e tamanho, quadro grande demais, tamanhos |
+| `frames` | 5 | montagem/parse, rejeição de PAN e tamanho, quadro grande demais, tamanhos, lacunas de `round` |
 | `loc_mat` | 3 | produto, Cholesky e inversa, rejeição de matriz singular (T4.14) |
 | `loc` | 10 | multilateração exata 2D/3D e degenerada; EKF parado, em reta, com *outliers*, com 2 distâncias, NEES, reinício por tempo e por salto (T4.1–T4.7, T4.12–T4.13) |
+
+A suíte `frames` também cobre o rastreador de `round` do gateway (T5.0):
+lacunas, volta em 256, repetido e reinício da tag.
 
 Os testes do EKF usam trajetórias sintéticas com um gerador determinístico
 (xorshift32 + Box-Muller) e imprimem o RMSE e o NEES obtidos.
@@ -443,8 +463,12 @@ com FPU ligada por `boards/decawave_dwm1001_dev.conf`).
 flowchart LR
     uart["UART da tag<br/>linhas R,... e L,..."] -->|capture| csv[("CSV")]
     uart -->|capture| pcsv[("_pos.csv")]
+    guart["UART do gateway<br/>linhas P,..."] -->|capture| gcsv[("_gw.csv")]
     csv -->|stats| s["sucesso · média corrigida e bruta<br/>desvio · potência · viés"]
     pcsv -->|pos| ps["dispersão por eixo · σ do EKF<br/>RMSE · CEP50/95"]
+    gcsv -->|pos --tag| ps
+    gcsv -->|gw| gs["recebidas · lacunas · maior intervalo<br/>potência · entrega (--sent)"]
+    pcsv -.->|--sent| gs
     csv -->|calib| c1["Δ atraso de antena<br/>(par igual)"]
     csv -->|calib3| c3["Δ por placa<br/>(3 placas)"]
 ```
@@ -653,9 +677,11 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 
 | Parâmetro | Padrão (faixa) | O que faz | Impacto ao alterar |
 |-----------|----------------|-----------|--------------------|
-| `RTLS_GATEWAY_MAX_TAGS` | 16 (1–64) | capacidade da tabela | ~66 B de RAM por tag (entrada da tabela + cópia no snapshot); tags além disso são ignoradas |
+| `RTLS_GATEWAY_MAX_TAGS` | 16 (1–64) | capacidade da tabela | ~115 B de RAM por tag (entrada da tabela + cópias do snapshot e do resumo); tags além disso são ignoradas |
 | `RTLS_GATEWAY_TAG_TIMEOUT_MS` | 2000 | expiração de tag sem atualização | menor tira mais cedo uma tag que saiu; pequeno demais remove tags com perdas pontuais |
 | `RTLS_GATEWAY_PUBLISH_MS` | 100 | período do snapshot para o host | também limita a espera do RX entre publicações |
+| `RTLS_GATEWAY_CSV_OUTPUT` | `y` | linha `P,...` por POSITION na UART | ~6 ms de `printk` síncrono por linha, com o rádio parado: com 1–2 tags não pesa; com muitas tags desligue (o host recebe pelo SPI no M6) |
+| `RTLS_GATEWAY_STATS_PERIOD_S` | 10 (0 desliga) | resumo `GW:` por tag | os contadores zeram a cada resumo |
 
 ### 4.9 Bancada (ping-pong)
 
