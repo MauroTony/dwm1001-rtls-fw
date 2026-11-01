@@ -38,11 +38,11 @@ flowchart LR
         A["4 × Âncora<br/>apps/anchor<br/>responder DS-TWR 🧪"]:::bench
         T["Tag<br/>apps/tag<br/>initiator DS-TWR 🧪<br/>EKF ✅"]:::bench
     end
-    G["Gateway<br/>apps/gateway<br/>RX + tabela 🧪<br/>SPI escravo 📐"]:::bench
+    G["Gateway<br/>apps/gateway<br/>RX + tabela 🧪<br/>SPI escravo 🧪"]:::bench
     H["Host<br/>fora deste repositório"]:::ext
     T <-- "POLL · RESP · FINAL · REPORT" --> A
     T -- "POSITION (10 Hz)" --> G
-    G -. "SPI TLV (M6)" .-> H
+    G -- "SPI TLV + DRDY" --> H
     classDef bench fill:#fff3cd,stroke:#b8860b,color:#111
     classDef ext fill:#e3f2fd,stroke:#1565c0,color:#111
 ```
@@ -53,7 +53,8 @@ flowchart LR
    o POSITION ao gateway.
 3. O gateway mantém a tabela de tags, imprime cada POSITION em CSV e conta as
    lacunas de `round` por tag.
-4. O envio ao host (M6) ainda não existe.
+4. O host lê a tabela pelo SPI escravo, paginada e com CRC, avisado pelo
+   DRDY. Falta validar com um host real.
 
 ### 1.2 Camadas do firmware
 
@@ -69,7 +70,7 @@ flowchart TB
         math["twr_math<br/>DS-TWR · RSL · tempos ✅"]:::ok
         proto["proto<br/>frames.c ✅"]:::ok
         loc["loc<br/>LS · EKF · matrizes ✅"]:::ok
-        hif["host_if<br/>SPIS + DRDY 📐"]:::stub
+        hif["host_if<br/>codec ✅ · SPIS + DRDY 🧪"]:::bench
         led["common<br/>status_led.c 🧪"]:::bench
     end
     drv["drivers/dw1000<br/>dw1000.c 🧪"]:::bench
@@ -124,16 +125,16 @@ flowchart TB
 |---------|----------|----------|
 | [`apps/tag`](../apps/tag) | laço de 10 Hz: DS-TWR → CSV → EKF → POSITION | 🧪 |
 | [`apps/anchor`](../apps/anchor) | responder DS-TWR; `nodes/a1..a4.conf` por âncora | 🧪 |
-| [`apps/gateway`](../apps/gateway) | RX de POSITION, tabela de tags, CSV e lacunas por tag, publicação ao host | 🧪 (host 📐) |
+| [`apps/gateway`](../apps/gateway) | RX de POSITION, tabela de tags, CSV e lacunas por tag, publicação ao host | 🧪 |
 | [`drivers/dw1000`](../drivers/dw1000) | driver próprio do DW1000 + mapa de registradores | 🧪 |
 | [`lib/twr`](../lib/twr) | motor DS-TWR e matemática | 🧪 / ✅ |
 | [`lib/proto`](../lib/proto) | montagem e validação de quadros | ✅ |
 | [`lib/loc`](../lib/loc) | multilateração LS + Gauss-Newton, EKF, matrizes pequenas | ✅ |
-| [`lib/host_if`](../lib/host_if) | init do SPI escravo e do DRDY; protocolo pendente | 📐 |
+| [`lib/host_if`](../lib/host_if) | codec do protocolo SPI (páginas, CRC) e thread SPIS + DRDY | ✅ / 🧪 |
 | [`lib/common`](../lib/common) | LEDs de status | 🧪 |
 | [`include/rtls`](../include/rtls) | headers públicos de todas as bibliotecas | — |
 | [`samples/uwb_pingpong`](../samples/uwb_pingpong) | bancada do driver (M1) | 🧪 |
-| [`tests/unit`](../tests/unit) | 29 testes ztest | ✅ |
+| [`tests/unit`](../tests/unit) | 36 testes ztest | ✅ |
 | [`tools/rtls_log.py`](../tools/rtls_log.py) | captura CSV, estatística de distâncias e posições, calibração de antena | ✅ |
 | [`scripts/`](../scripts) | setup Windows/Linux, ativação, lista de placas | ✅ |
 
@@ -146,7 +147,7 @@ flowchart TB
 | `lib/twr` (`twr_math`) | ● | ● | | ● | ● |
 | `lib/proto` | ● | ● | ● | ● | ● |
 | `lib/loc` | ● | | | | ● |
-| `lib/host_if` | | | ● | | |
+| `lib/host_if` | | | ● | | ● (codec) |
 | `lib/common` (LEDs) | ● | ● | ● | ● | |
 
 A seleção vem do `prj.conf` de cada app (seção [3.5](#35-kconfig-ligando-e-configurando-módulos)).
@@ -353,14 +354,34 @@ flowchart LR
 | > 5 rodadas seguidas com **metade ou mais** rejeitadas **e** a rodada coerente entre si ($s^2 \le \gamma\,\sigma_r^2$) | o filtro está preso numa solução espelhada, que concorda só com parte das âncoras (T4.13) |
 | soma das variâncias de posição > 100 m² ou estado não finito | proteção numérica |
 
-### 2.6 Interface com o host · `lib/host_if/` 📐
+### 2.6 Interface com o host · `lib/host_if/` 🧪
 
-| Função | Situação | Uso |
-|--------|----------|-----|
-| `rtls_host_if_init()` | 🧪 confere o SPIS (`chosen rtls,host-spi`) e configura o DRDY (P0.26) | `apps/gateway` |
-| `rtls_host_if_publish()` | 📐 `-ENOSYS` | `publish_snapshot()` do gateway |
-
+**O que faz:** entrega a tabela de tags a um host externo pelo SPI escravo,
+paginada (9 registros), com CRC por página e o pino DRDY.
+**Por que existe:** o gateway não tem rede; quem publica (MQTT etc.) é o host.
 Protocolo: [05-interface-spi-gateway.md](05-interface-spi-gateway.md).
+
+```mermaid
+flowchart LR
+    main["main do gateway<br/>publish_snapshot() a cada 100 ms"]:::bench -- "rtls_host_if_publish()<br/>(mutex)" --> snap[("snapshot<br/>sequência · DRDY")]:::bench
+    subgraph T["thread host_if (cooperativa −1)"]
+        idle["IDLE<br/>recebe o request"] --> meta["META<br/>envia [SIZE][1]"] --> data["DATA<br/>envia a resposta"] --> idle
+    end
+    snap --> codec["rtls_host_if_handle()<br/>envelope · INFO · página + CRC"]:::ok
+    idle --> codec
+    data -- "última página lida inteira" --> snap
+    classDef ok fill:#d4edda,stroke:#2e7d32,color:#111
+    classDef bench fill:#fff3cd,stroke:#b8860b,color:#111
+    style T fill:#fff3cd,stroke:#b8860b,color:#111
+```
+
+| Função | Camada | O que faz | Uso |
+|--------|--------|-----------|-----|
+| `rtls_host_if_handle()` | codec ✅ | lê o TLV do request (ignora o preenchimento) e monta a resposta; devolve 0 para NOP; informa DRDY on/off e se é a última página | `host_if.c`, testes |
+| `rtls_host_if_crc()` | codec ✅ | CRC-16/CCITT-FALSE: `crc16_itu_t(0xFFFF, ...)` | idem |
+| `rtls_host_if_n_pages()` | codec ✅ | páginas de um snapshot (mínimo 1) | idem |
+| `rtls_host_if_init()` | transporte 🧪 | confere SPIS e DRDY, guarda os dados do `INFO` e cria a thread `host_if` | `apps/gateway` |
+| `rtls_host_if_publish()` | transporte 🧪 | copia o snapshot sob mutex; avança a sequência e sobe o DRDY só se algo além do `age_ms` mudou | `publish_snapshot()` do gateway |
 
 ### 2.7 LEDs de status · `lib/common/status_led.c` 🧪
 
@@ -411,7 +432,7 @@ flowchart LR
     rx["dw1000_receive()<br/>(espera até o próximo snapshot)"]:::bench --> h["handle_frame():<br/>rtls_frame_parse()"]:::ok
     h -- POSITION --> up["tag_table_update()<br/>+ rtls_round_tracker_update()"]:::bench --> csv["print_position()<br/>CSV P,..."]:::bench
     rx --> t{"100 ms?"}
-    t -- sim --> snap["tag_table_snapshot()<br/>(expira tags > 2 s)"]:::bench --> pub["rtls_host_if_publish() 📐"]:::stub
+    t -- sim --> snap["tag_table_snapshot()<br/>(expira tags > 2 s)<br/>+ tags simuladas"]:::bench --> pub["rtls_host_if_publish()"]:::bench
     rx --> s10{"10 s?"}
     s10 -- sim --> ls["log_stats()<br/>GW: recebidas · lacunas · RX"]:::bench
     classDef ok fill:#d4edda,stroke:#2e7d32,color:#111
@@ -426,6 +447,7 @@ flowchart LR
 | `tag_table_get_stats()` | recebidas, lacunas e soma da potência por tag desde o último resumo |
 | `print_position()` | uma linha `P,tag,round,t_ms,x,y,z,sx,sy,sz,n,flags,rx_cdbm,fp_cdbm,gw_ms` por POSITION |
 | `log_stats()` | resumo de 10 s: `GW: tag 0x1001: N posicoes, M lacunas (x% recebidas), RX d dBm` |
+| `add_sim_tags()` | com `CONFIG_RTLS_GATEWAY_SIM_TAGS` > 0, acrescenta tags sintéticas ao snapshot para testar a paginação do SPI |
 
 > [!NOTE]
 > Lacuna de `round` não é sempre quadro perdido: o `round` da tag avança
@@ -446,6 +468,7 @@ Valida o driver isoladamente (M1).
 | `twr_math` | 11 | wrap de 40 bits, DS-TWR ideal e com ±20 ppm, intervalos, conversões de tempo, slots, RSL por Friis, tabela de viés, distância corrigida |
 | `frames` | 5 | montagem/parse, rejeição de PAN e tamanho, quadro grande demais, tamanhos, lacunas de `round` |
 | `loc_mat` | 3 | produto, Cholesky e inversa, rejeição de matriz singular (T4.14) |
+| `host_if` | 7 | CRC com o vetor "123456789", contagem de páginas, INFO, 20 tags em 3 páginas, tabela vazia, DRDY on/off, NOP e erros (T6.0) |
 | `loc` | 10 | multilateração exata 2D/3D e degenerada; EKF parado, em reta, com *outliers*, com 2 distâncias, NEES, reinício por tempo e por salto (T4.1–T4.7, T4.12–T4.13) |
 
 A suíte `frames` também cobre o rastreador de `round` do gateway (T5.0):
@@ -515,6 +538,11 @@ flowchart LR
 |-------------------|-----|-----------------|----------|
 | SPI | `spi_transceive_dt()`, `spi_write_dt()` | `dw1000.c` | registradores do DW1000 (2 MHz no init, 8 MHz depois) |
 | GPIO | `gpio_pin_configure_dt()`, callbacks | `dw1000.c`, `status_led.c`, `host_if.c` | RESET, IRQ, LEDs, DRDY |
+| SPI escravo | `spi_transceive()` com `SPI_OP_MODE_SLAVE` | `host_if.c` | uma transação do host por chamada; devolve os bytes recebidos |
+| Thread própria | `K_THREAD_STACK_DEFINE`, `k_thread_create()` | `host_if.c` | a thread `host_if` do gateway |
+| Mutex | `K_MUTEX_DEFINE`, `k_mutex_lock/unlock` | `host_if.c` | snapshot compartilhado entre a `main` e a `host_if` |
+| CRC | `crc16_itu_t()` (`CONFIG_CRC`) | `host_if_codec.c` | CRC-16/CCITT-FALSE das páginas |
+| Versão do app | arquivo `VERSION` + `<zephyr/app_version.h>` | gateway | versão anunciada no `RTLS_INFO_GET` e no boot |
 | Semáforo | `K_SEM_DEFINE`, `k_sem_take/give` | `dw1000.c` | a ISR acorda a thread dona do rádio |
 | Timeouts / tempo | `sys_timepoint_*`, `K_USEC`, `K_TIMEOUT_ABS_MS` | `dw1000.c`, `twr_*.c`, tag | janelas de RX; ciclo de 100 ms sem deriva |
 | Timer | `K_TIMER_DEFINE` | `status_led.c` | heartbeat |
@@ -571,6 +599,7 @@ flowchart TB
 | ISR GPIOTE (P0.19) | interrupção | `k_sem_give()` | `dw1000.c` |
 | ISR do timer | interrupção | alterna o LED verde | `status_led.c` |
 | workqueue do sistema | cooperativa (−1) | resumo de 10 s da âncora | `apps/anchor` |
+| `host_if` | cooperativa (−1) | transações do SPIS e DRDY (gateway) | `host_if.c` |
 | `main` | preemptiva 0 | rádio: ciclo da tag / responder / RX do gateway | `apps/*` |
 | thread de log | baixa | formata e envia os logs | Zephyr |
 | idle | mínima | — | Zephyr |
@@ -682,6 +711,10 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | `RTLS_GATEWAY_PUBLISH_MS` | 100 | período do snapshot para o host | também limita a espera do RX entre publicações |
 | `RTLS_GATEWAY_CSV_OUTPUT` | `y` | linha `P,...` por POSITION na UART | ~6 ms de `printk` síncrono por linha, com o rádio parado: com 1–2 tags não pesa; com muitas tags desligue (o host recebe pelo SPI no M6) |
 | `RTLS_GATEWAY_STATS_PERIOD_S` | 10 (0 desliga) | resumo `GW:` por tag | os contadores zeram a cada resumo |
+| `RTLS_GATEWAY_SIM_TAGS` | 0 (0–32) | tags sintéticas no snapshot para o host | só para teste (T6.3/T6.4); em uso normal fica 0 |
+| `RTLS_HOST_IF_MAX_RECORDS` | 64 (1–255) | tamanho da cópia do snapshot | 26 B de RAM por registro; precisa ≥ `MAX_TAGS` + `SIM_TAGS` (`BUILD_ASSERT`) |
+| `RTLS_HOST_IF_STACK_SIZE` | 1024 | pilha da thread `host_if` | os buffers ficam fora da pilha; reduzir arrisca estouro |
+| `RTLS_HOST_IF_THREAD_PRIORITY` | −1 (cooperativa) | prioridade da `host_if` | ≥ 0 deixa a thread abaixo da `main`, e o SPIS demora a rearmar enquanto a `main` imprime o CSV |
 
 ### 4.9 Bancada (ping-pong)
 
@@ -727,6 +760,9 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | Tabela de viés e Friis | APS011 tab. 2, −14,3 dBm, canal 5 | `twr_math.c` | válidos só para canal 5 / PRF 64 |
 | `STATS_PERIOD` | 10 s | `apps/anchor/src/main.c` | resumo da âncora |
 | `RTLS_HOST_IF_RECORDS_PER_PAGE` | 9 | `host_if.h` | limite de 255 B do SPIS |
+| `RTLS_HOST_IF_MAX_XFER` | 255 B | `host_if.h` | maior transação do SPIS (EasyDMA de 8 bits); tamanho dos buffers |
+| `SIM_TAG_BASE` | `0x1F00` | `apps/gateway/src/main.c` | primeiro ID das tags simuladas |
+| Versão do gateway | 0.6.0 | `apps/gateway/VERSION` | anunciada no `RTLS_INFO_GET`; suba a cada marco que mudar o protocolo |
 | `RTLS_LOC_MAX_STATES` / `RTLS_MAT_MAX` | 6 | `loc.h`, `loc_mat.h` | estado 3D [p; v]; tamanho fixo das matrizes |
 | `LOC_GN_ITERS` / `LOC_GN_STOP_M` | 3 / 0,1 mm | `loc.c` | Gauss-Newton após o LS; para antes se o passo for menor |
 | `LOC_TIMEOUT_MS` | 1000 ms | `loc.c` | sem nenhuma distância aceita por esse tempo, reinicializa |

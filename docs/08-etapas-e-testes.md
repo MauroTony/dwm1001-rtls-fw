@@ -43,7 +43,7 @@ flowchart LR
 | M3 DS-TWR 1×4 a 10 Hz | 🧪 | — | 4 âncoras + tag | 5 |
 | M4 Localização (EKF) | 🧪 (M4a ✅) | `loc`, `loc_mat` (T4.1–T4.7, T4.12–T4.14) | grade de pontos | 5 |
 | M5 Tag → gateway | 🧪 | lacunas de `round` (T5.0) | entrega das posições | 6 |
-| M6 SPI → host | 📐 | codec TLV, CRC | host lendo a tabela | 6 + host |
+| M6 SPI → host | 🧪 | codec TLV, CRC (T6.0) | host lendo a tabela | 6 + host |
 | M7 Multi-tag (TDMA) | 📐 | — | 4 tags simultâneas | 9 |
 | M8 Robustez e avaliação | 📐 | — | campanha do TCC | todas |
 | M9 Descoberta e seleção de âncoras *(opcional)* | 📐 | seleção e tabela (ztest) | 8 âncoras, movimento entre zonas | 10 |
@@ -248,7 +248,7 @@ python -m serial.tools.miniterm /dev/ttyACM0 115200    # Linux
 |----|-----------------------|--------|
 | Tag | `<inf> tag: RTLS tag 0x1001: 10 Hz, 4 ancoras a partir de 0xa001` e `<inf> tag: LOC 2D: sigma_r ...` | linhas `R,...` a 10 Hz e, com ≥ 3 âncoras, `L,...`; resumo `TWR: ...` e `LOC: ...` a cada 10 s |
 | Âncora | `<inf> anchor: RTLS ancora 0xa001 em (0, 0, 2500) mm` | resumo `TWR: POLL ...` a cada 10 s |
-| Gateway | `<inf> gateway: RTLS gateway 0x0001: ate 16 tags` | uma linha `P,...` por POSITION; resumo `GW: ...` por tag a cada 10 s (`GW: nenhuma tag ativa` sem tags) |
+| Gateway | `<inf> gateway: RTLS gateway 0x0001 v0.6.0: ate 16 tags` e `<inf> rtls_host_if: host_if pronto (SPIS spi@40004000, protocolo v1, 9 registros por pagina)` | uma linha `P,...` por POSITION; resumo `GW: ...` por tag a cada 10 s (`GW: nenhuma tag ativa` sem tags) |
 | Ping/pong | `<inf> pingpong: UWB ping-pong: ...` | resumo a cada 100 pings |
 
 **LEDs:** verde piscando = firmware vivo · azul alternando = atividade UWB ·
@@ -894,22 +894,26 @@ west flash -d build/tag_t2 --dev-id $T2
 
 ---
 
-## 9. M6 — Interface SPI gateway → host 📐
+## 9. M6 — Interface SPI gateway → host 🧪
 
 **Objetivo:** host externo lendo a tabela de posições a 10 Hz.
 **Depende de:** M5. Especificação em [05-interface-spi-gateway.md](05-interface-spi-gateway.md).
 
 ### Implementação
 
-- [ ] thread `host_if` com a máquina de estados IDLE → REQ → META → DATA
-- [ ] snapshot sob mutex, paginação de 9 registros, CRC-16/CCITT-FALSE, DRDY
+- [x] codec puro (`host_if_codec.c`): envelope, `INFO`, páginas com CRC, NOP e erros
+- [x] thread `host_if` com a máquina de estados IDLE → META → DATA ([05 §6](05-interface-spi-gateway.md#6-implementação-no-gateway-m6))
+- [x] snapshot sob mutex, paginação de 9 registros, CRC-16/CCITT-FALSE, DRDY
+- [x] modo de teste com tags simuladas (`CONFIG_RTLS_GATEWAY_SIM_TAGS`) e versão do firmware em `apps/gateway/VERSION`
 - [ ] host de referência: ESP32-S3 (`dwm1001-gateway-esp`) ou script Python com `spidev` *(a implementar)*
 
 ### Testes automatizados
 
 | ID | Caso | Esperado |
 |----|------|----------|
-| T6.0 | codec das páginas e CRC (ztest) | vetores conhecidos batem |
+| T6.0 | codec das páginas e CRC (ztest, suíte `host_if`) | vetores conhecidos batem |
+
+Resultado na placa (T0.3b, 01/11/2026): os 7 casos do T6.0 aprovados.
 
 ### Preparação da bancada
 
@@ -933,6 +937,10 @@ west flash -d build/tag_t2 --dev-id $T2
 west build -d build/gateway
 west flash -d build/gateway --dev-id $GW
 python -m serial.tools.miniterm <COM do GW> 115200
+
+# T6.3 e T6.4 sem montar a bancada: 20 tags simuladas no snapshot
+west build -b decawave_dwm1001_dev apps/gateway -d build/gateway_sim -- -DCONFIG_RTLS_GATEWAY_SIM_TAGS=20
+west flash -d build/gateway_sim --dev-id $GW
 ```
 
 ### Roteiro de bancada
@@ -941,7 +949,7 @@ python -m serial.tools.miniterm <COM do GW> 115200
 |----|-------|----------|
 | T6.1 | Host envia `RTLS_INFO_GET` | resposta com versão, ID e capacidade corretos |
 | T6.2 | Host interrompe uma transação e envia 3 × `0xFF` | o gateway volta ao IDLE |
-| T6.3 | Tabela com > 9 tags (modo de teste com registros simulados, *a implementar*) | paginação correta; `snapshot` igual em todas as páginas |
+| T6.3 | Tabela com > 9 tags: gateway com `-DCONFIG_RTLS_GATEWAY_SIM_TAGS=20` | 3 páginas (9 + 9 + 2); `snapshot` igual em todas as páginas |
 | T6.4 | 10 min a 10 Hz | **zero** erros de CRC |
 | T6.5 | Analisador lógico no DRDY | sobe a cada snapshot novo; desce após a última página |
 | T6.6 | Latência tag → host | ≤ 50 ms |

@@ -169,7 +169,8 @@ existir, o modo SS/DS vira mais um parâmetro remoto.
 | M1, M2, M3 | implementados e compilando; falta a validação em hardware ([07-bancada.md](07-bancada.md)) |
 | M4 | M4a concluído (T4.1–T4.7 e T4.12–T4.14 aprovados na placa); M4b integrado na tag, falta a bancada (T4.9–T4.11) |
 | M5 | implementado (CSV `P,...` e lacunas no gateway, `rtls_log.py gw`, T5.0); falta a bancada (T5.1–T5.4) |
-| M6 a M8 | pendentes |
+| M6 | implementado (codec com T6.0 aprovado, thread SPIS + DRDY, tags simuladas); falta o host de referência e a bancada (T6.1–T6.7) |
+| M7 e M8 | pendentes |
 | M9 a M12 | opcionais, no fim do projeto se houver tempo |
 
 ### M0 — Ambiente e estrutura base · ~1 semana
