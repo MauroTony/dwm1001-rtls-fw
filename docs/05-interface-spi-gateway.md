@@ -158,7 +158,7 @@ stateDiagram-v2
 | Recuperação | 3 × 1 B `0xFF`: META e DATA consomem uma transação cada, e no IDLE o NOP não tem resposta |
 | Snapshot | `rtls_host_if_publish()` copia a tabela sob mutex a cada 100 ms; a sequência só avança se algo além do `age_ms` mudou |
 | DRDY | sobe com sequência nova; desce quando o host lê **inteira** a última página dessa sequência |
-| Prioridade | thread cooperativa (−1), acima da `main`: rearma o SPIS logo depois de cada transação, mesmo com a `main` ocupada no `printk` do CSV |
+| Prioridade | thread cooperativa (−1), acima da `main`: rearma o SPIS logo depois de cada transação, sem esperar a `main` terminar o que estiver fazendo (tabela, CSV, BEACON) |
 | Versão do firmware | arquivo [`apps/gateway/VERSION`](../apps/gateway/VERSION) (hoje 0.6.0), lido de `<zephyr/app_version.h>` |
 | Teste sem bancada | `CONFIG_RTLS_GATEWAY_SIM_TAGS=N` acrescenta N tags sintéticas (`0x1F00 + i`) ao snapshot, para testar a paginação (T6.3) |
 

@@ -44,7 +44,7 @@ flowchart LR
 | M4 Localização (EKF) | 🧪 (M4a ✅) | `loc`, `loc_mat` (T4.1–T4.7, T4.12–T4.14) | grade de pontos | 5 |
 | M5 Tag → gateway | 🧪 | lacunas de `round` (T5.0) | entrega das posições | 6 |
 | M6 SPI → host | 🧪 | codec TLV, CRC (T6.0) | host lendo a tabela | 6 + host |
-| M7 Multi-tag (TDMA) | 📐 | — | 4 tags simultâneas | 9 |
+| M7 Multi-tag (TDMA) | 🧪 | superquadro (T7.0) | 4 tags simultâneas | 9 |
 | M8 Robustez e avaliação | 📐 | — | campanha do TCC | todas |
 | M9 Descoberta e seleção de âncoras *(opcional)* | 📐 | seleção e tabela (ztest) | 8 âncoras, movimento entre zonas | 10 |
 | M10 Até 8 âncoras + FDE *(opcional)* | 📐 | FDE com falhas sintéticas | NLOS controlado | 10 |
@@ -269,6 +269,13 @@ python tools/rtls_log.py stats captures/T2.2_5m.csv --true-distance 5.0
 
 **Nome dos arquivos:** `captures/<ID do teste>_<cenário>.csv`, por exemplo
 `captures/T2.4_3m.csv`. O mesmo nome vai para a ficha.
+
+> [!WARNING]
+> O CSV passa pelo log diferido do Zephyr. Se o buffer dele encher, o
+> firmware descarta linhas e imprime `--- N messages dropped ---`. O
+> `capture` conta essas linhas e termina com `ATENÇÃO: o firmware descartou
+> N mensagens`. Nesse caso a captura está incompleta: taxas de sucesso e de
+> entrega calculadas sobre ela saem mais baixas que a real.
 
 **Saída do `stats`:**
 
@@ -961,15 +968,24 @@ west flash -d build/gateway_sim --dev-id $GW
 
 ---
 
-## 10. M7 — Múltiplas tags (TDMA) 📐
+## 10. M7 — Múltiplas tags (TDMA) 🧪
 
 **Objetivo:** várias tags a 10 Hz sem colisão. Meta de capacidade: 8 tags.
 **Depende de:** M5.
 
 ### Implementação
 
-- [ ] BEACON do gateway a cada 100 ms; slot `k = tag_id − 0x1001`
-- [ ] sincronismo da tag no beacon; parar de transmitir após 3 beacons perdidos
+- [x] BEACON do gateway a cada 100 ms (`CONFIG_RTLS_GATEWAY_BEACON`); slot `k = tag_id − 0x1001`
+- [x] sincronismo da tag no beacon pelo `RX_TIME` do DW1000 (`CONFIG_RTLS_TAG_TDMA`); parar de transmitir após 3 beacons perdidos
+- [x] contadores: `GW: N BEACONs, erros de TX, atraso max` no gateway e `TDMA: ...` na tag
+
+### Testes automatizados
+
+| ID | Caso | Esperado |
+|----|------|----------|
+| T7.0 | superquadro (ztest, suíte `tdma`): slot pelo ID, período, slots, 3 BEACONs perdidos, ressincronismo, BEACON inválido | todos aprovados |
+
+Resultado na placa (T0.3b, 01/11/2026): os 4 casos do T7.0 aprovados.
 
 ### Preparação da bancada
 
@@ -983,7 +999,7 @@ $tags = [ordered]@{ t1 = $T1; t2 = $T2; t3 = $T3; t4 = $T4 }
 $i = 0
 foreach ($n in $tags.Keys) {
     $id = '0x{0:X4}' -f (0x1001 + $i); $i++
-    west build -b decawave_dwm1001_dev apps/tag -d "build/tag_$n" -- "-DCONFIG_RTLS_NODE_ID=$id" "-DEXTRA_CONF_FILE=nodes/$n.conf"
+    west build -b decawave_dwm1001_dev apps/tag -d "build/tag_$n" -- "-DCONFIG_RTLS_NODE_ID=$id" "-DEXTRA_CONF_FILE=nodes/$n.conf" -DCONFIG_RTLS_TAG_TDMA=y
     if ($LASTEXITCODE) { break }
     west flash -d "build/tag_$n" --dev-id $tags[$n]
     if ($LASTEXITCODE) { break }
@@ -994,22 +1010,30 @@ foreach ($n in $tags.Keys) {
 # Linux (bash)
 for i in 1 2 3 4; do
     serial_var=T$i
-    west build -b decawave_dwm1001_dev apps/tag -d build/tag_t$i -- -DCONFIG_RTLS_NODE_ID=$(printf '0x%04X' $((0x1000 + i))) "-DEXTRA_CONF_FILE=nodes/t$i.conf" || break
+    west build -b decawave_dwm1001_dev apps/tag -d build/tag_t$i -- -DCONFIG_RTLS_NODE_ID=$(printf '0x%04X' $((0x1000 + i))) "-DEXTRA_CONF_FILE=nodes/t$i.conf" -DCONFIG_RTLS_TAG_TDMA=y || break
     west flash -d build/tag_t$i --dev-id "${!serial_var}" || break
 done
 ```
 
-Gateway e âncoras como no M5. Um console por tag para acompanhar os
-resumos.
+Âncoras como no M5. O gateway precisa do BEACON:
+
+```bash
+west build -b decawave_dwm1001_dev apps/gateway -d build/gateway_bcn -- -DCONFIG_RTLS_GATEWAY_BEACON=y
+west flash -d build/gateway_bcn --dev-id $GW
+```
+
+Um console por tag para acompanhar os resumos. No boot, a tag mostra
+`TDMA: slot k; procurando o BEACON do gateway` e, ao ouvir o primeiro,
+`TDMA: sincronizado no superquadro N (8 slots de 12000 us)`.
 
 ### Roteiro de bancada
 
 | ID | Passo | Esperado |
 |----|-------|----------|
-| T7.1 | Gateway transmitindo beacons; tag capturando os instantes | período de 100 ms estável |
+| T7.1 | Gateway transmitindo beacons; resumos de 10 s do gateway e da tag | `GW: 100 BEACONs, 0 erros de TX, atraso max` < 1000 us; tag `TDMA: sincronizado, 100 BEACONs, 0 perdidos` |
 | T7.2 | 2 tags | cada uma no próprio slot, sem sobreposição |
 | T7.3 | **4 tags**, 10 min | ≥ 95 % de rodadas completas em cada; sem colisões no gateway |
-| T7.4 | Desligue o gateway | as tags param de transmitir após 3 beacons; voltam quando ele religa |
+| T7.4 | Desligue o gateway | `TDMA: 3 BEACONs perdidos seguidos; a tag para de transmitir`; ao religar, `TDMA: sincronizado` de novo |
 | T7.5 | 8 tags (se houver placas) | capacidade-alvo confirmada |
 
 ### Critério de aceite

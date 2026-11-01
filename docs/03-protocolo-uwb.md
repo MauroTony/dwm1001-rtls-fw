@@ -135,14 +135,30 @@ colisões persistentes.
 | BEACON 4 ms | tag slot 0 (12 ms) | tag slot 1 | ... | tag slot 7 (12 ms)           |
 ```
 
-- O gateway transmite o BEACON (`superframe`, `n_slots`, `slot_us`) no
-  instante 0.
-- A tag com slot *k* (a princípio, `k = tag_id − 0x1001`) inicia o POLL em
-  `beacon_rx + 4 ms + k·12 ms`.
-- A tag que perder 3 beacons seguidos para de transmitir e fica em RX até
-  sincronizar de novo.
+- O gateway (`CONFIG_RTLS_GATEWAY_BEACON=y`) transmite o BEACON
+  (`superframe`, `n_slots`, `slot_us`) no instante 0, numa grade de 100 ms
+  agendada em µs.
+- A tag (`CONFIG_RTLS_TAG_TDMA=y`) com slot `k = tag_id − 0x1001` inicia o
+  POLL em `beacon + 4 ms + k·slot_us`. O período vem do próprio BEACON:
+  `4 ms + n_slots·slot_us`.
+- `beacon` é o instante em que o quadro **começou** a chegar, medido pelo
+  `RX_TIME` do DW1000 contra o relógio dele no momento da leitura. Assim a
+  latência ISR → thread não entra no sincronismo.
+- Entre superquadros, a tag abre o RX ± 1 ms em volta do BEACON previsto. Se
+  ele não vier, o superquadro segue pela previsão. Com **3 perdidos
+  seguidos**, a tag para de transmitir e escuta até sincronizar de novo.
 - Capacidade: **8 tags a 10 Hz** (ou 16 tags a 5 Hz com o mesmo superquadro
   dobrado).
+
+| Fonte de erro no início do slot | Ordem |
+|---------------------------------|-------|
+| resolução do tick do kernel (32 768 Hz) | ~30 µs |
+| atraso do BEACON no gateway (RX em andamento, publicação ao host) | dezenas a centenas de µs; medido na linha `GW: ... atraso max` |
+| deriva entre cristais (± 20 ppm em 100 ms) | 2 µs |
+| **guarda disponível** no fim de cada slot | ~1,4 ms |
+
+Sem gateway (bancadas do M2 ao M6), a tag fica com `CONFIG_RTLS_TAG_TDMA=n`
+e roda no próprio ciclo, como na §5.1.
 
 ### 5.3 De onde vem o limite de 8 tags e como subir
 
@@ -188,6 +204,8 @@ quadro por ms por nó (APS017). Os cenários acima respeitam isso.
 | TX atrasado tarde demais (`HPDWARN`) | Aborta a rodada e incrementa um contador de diagnóstico |
 | Quadro com FCS inválido | Descartado pelo hardware (contador de erro de RX) |
 | POSITION perdido | Sem retransmissão; o gateway contabiliza a lacuna pela sequência `round` |
+| BEACON perdido (TDMA) | O superquadro segue pela previsão; com 3 perdidos seguidos, a tag para de transmitir até ouvir outro |
+| Slot da tag fora do superquadro (`k ≥ n_slots`) | A tag não transmite e registra o erro uma vez |
 
 **Filtragem em hardware:** a âncora aceita quadros de dados do PAN para o
 próprio endereço ou broadcast. A tag só aceita os endereçados a ela. O

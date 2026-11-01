@@ -36,7 +36,7 @@ Markdown), e ficam versionados como texto junto com o código.
 flowchart LR
     subgraph area["Área monitorada"]
         A["4 × Âncora<br/>apps/anchor<br/>responder DS-TWR 🧪"]:::bench
-        T["Tag<br/>apps/tag<br/>initiator DS-TWR 🧪<br/>EKF ✅"]:::bench
+        T["Tag<br/>apps/tag<br/>initiator DS-TWR 🧪<br/>EKF ✅ · TDMA 🧪"]:::bench
     end
     G["Gateway<br/>apps/gateway<br/>RX + tabela 🧪<br/>SPI escravo 🧪"]:::bench
     H["Host<br/>fora deste repositório"]:::ext
@@ -49,6 +49,8 @@ flowchart LR
 
 **Hoje, de ponta a ponta:**
 1. A tag mede a distância até as 4 âncoras a 10 Hz e corrige o viés por RSL.
+   Com TDMA ligado (M7), o gateway abre cada superquadro com um BEACON e cada
+   tag só transmite no próprio slot.
 2. O EKF estima a posição; a tag imprime distâncias e posições em CSV e envia
    o POSITION ao gateway.
 3. O gateway mantém a tabela de tags, imprime cada POSITION em CSV e conta as
@@ -68,7 +70,7 @@ flowchart TB
     subgraph LIB["lib/ (serviços)"]
         twr["twr<br/>initiator · responder · common 🧪"]:::bench
         math["twr_math<br/>DS-TWR · RSL · tempos ✅"]:::ok
-        proto["proto<br/>frames.c ✅"]:::ok
+        proto["proto<br/>frames.c · tdma.c ✅"]:::ok
         loc["loc<br/>LS · EKF · matrizes ✅"]:::ok
         hif["host_if<br/>codec ✅ · SPIS + DRDY 🧪"]:::bench
         led["common<br/>status_led.c 🧪"]:::bench
@@ -134,7 +136,7 @@ flowchart TB
 | [`lib/common`](../lib/common) | LEDs de status | 🧪 |
 | [`include/rtls`](../include/rtls) | headers públicos de todas as bibliotecas | — |
 | [`samples/uwb_pingpong`](../samples/uwb_pingpong) | bancada do driver (M1) | 🧪 |
-| [`tests/unit`](../tests/unit) | 36 testes ztest | ✅ |
+| [`tests/unit`](../tests/unit) | 40 testes ztest | ✅ |
 | [`tools/rtls_log.py`](../tools/rtls_log.py) | captura CSV, estatística de distâncias e posições, calibração de antena | ✅ |
 | [`scripts/`](../scripts) | setup Windows/Linux, ativação, lista de placas | ✅ |
 
@@ -237,7 +239,7 @@ RTLS), monta e valida quadros.
 | FINAL | `0x22` | 2 | tag → âncoras | idem POLL |
 | REPORT | `0x23` | 24 | âncora → tag | idem RESP |
 | POSITION | `0x30` | 26 | tag → gateway | `send_position()` → `handle_frame()` |
-| BEACON | `0x10` | 6 | gateway → todos | só definido (M7) |
+| BEACON | `0x10` | 6 | gateway → todos | `send_beacon()` do gateway → `wait_beacon()` da tag (M7) |
 | PING | `0xF0` | 5 | ping ↔ pong | `samples/uwb_pingpong` |
 
 | Função | O que faz | Quem usa |
@@ -247,6 +249,7 @@ RTLS), monta e valida quadros.
 | `rtls_frame_parse()` | valida FC, PAN e tamanho; retorna o tipo | `twr_recv()`, gateway, ping-pong |
 | `rtls_msg_size()` | tamanho da carga por tipo | `rtls_frame_parse()` |
 | `rtls_round_tracker_update()` | conta as rodadas sem POSITION pela sequência de `round` (volta em 256); `t_ms` repetido = duplicado, `t_ms` menor = tag reiniciou | `tag_table.c` do gateway |
+| `rtls_tdma_*` (`tdma.c`) | superquadro TDMA: slot pelo ID, período (4 ms + n × slot), início do slot, próximo BEACON, 3 BEACONs perdidos = sem sincronismo | `tdma_loop()` da tag |
 
 ---
 
@@ -395,17 +398,20 @@ flowchart LR
 
 ### 2.8 Firmware da tag · `apps/tag/src/main.c` 🧪
 
+O ciclo (`run_cycle()`) é o mesmo nos dois modos; muda quem decide quando
+ele roda:
+
 ```mermaid
 flowchart LR
-    s["Início<br/>LEDs · dw1000_init/configure<br/>initiator_init · loc_init"] --> c["next += 100 ms"]
-    c --> r["rtls_twr_initiator<br/>_run_round()"]
-    r -- ok --> p["print_ranges()<br/>CSV R,..."] --> l["timed_loc_update()<br/>rtls_loc_update()"]
-    l -- 0 --> pp["print_position()<br/>CSV L,..."] --> pos["send_position()<br/>→ gateway"] --> st
-    l -- "-EAGAIN (inicializando)" --> st
-    r -- erro --> st{"10 s?"}
-    st -- sim --> ls["log_stats()"] --> z
-    st -- não --> z["k_sleep até next<br/>(K_TIMEOUT_ABS_MS)"]
-    z --> c
+    s["Início<br/>LEDs · dw1000_init/configure<br/>initiator_init · loc_init"]:::bench --> m{"RTLS_TAG_TDMA?"}
+    m -- não --> f["free_loop()<br/>a cada 1000/RATE_HZ ms"]:::bench --> cyc
+    m -- sim --> sync{"sincronizado?"}
+    sync -- não --> w["wait_beacon()<br/>escuta, não transmite"]:::bench --> sync
+    sync -- sim --> slot["dorme até o slot k<br/>beacon + 4 ms + k·12 ms"]:::bench --> cyc
+    cyc["run_cycle(): rodada → CSV R → EKF<br/>→ CSV L → POSITION"]:::bench --> nb["janela de RX<br/>BEACON previsto ± 1 ms"]:::bench
+    nb -- recebeu --> sync
+    nb -- "3 perdidos" --> sync
+    classDef bench fill:#fff3cd,stroke:#b8860b,color:#111
 ```
 
 | Função local | O que faz |
@@ -415,6 +421,11 @@ flowchart LR
 | `print_position()` | uma linha `L,round,t_ms,x,y,z,sx,sy,sz,n,flags` por posição (mm) |
 | `log_stats()` | resumo de 10 s: rodadas, % completas, tempo de rodada, por âncora; linha `LOC:` com posições, aceitas, rejeitadas, reinícios e tempo do EKF |
 | `send_position()` | monta e envia o POSITION ao gateway |
+| `run_cycle()` | rodada DS-TWR, CSV `R`, EKF, CSV `L` e POSITION |
+| `free_loop()` | ciclo próprio a `RTLS_TAG_UPDATE_RATE_HZ` (sem gateway, M2–M6) |
+| `tdma_loop()` | TDMA (M7): espera o BEACON, roda no slot `k = id − 0x1001`, abre a janela do próximo BEACON; sem 3 BEACONs seguidos, para de transmitir |
+| `wait_beacon()` | escuta até um prazo; ignora POLL/FINAL de outras tags; sincroniza no BEACON do gateway |
+| `frame_start_us()` | instante local em que o quadro começou: `RX_TIME` × relógio atual do DW1000, sem a latência ISR → thread |
 
 ### 2.9 Firmware da âncora · `apps/anchor/src/main.c` 🧪
 
@@ -429,7 +440,9 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    rx["dw1000_receive()<br/>(espera até o próximo snapshot)"]:::bench --> h["handle_frame():<br/>rtls_frame_parse()"]:::ok
+    rx["dw1000_receive()<br/>(até o próximo BEACON ou snapshot)"]:::bench --> h["handle_frame():<br/>rtls_frame_parse()"]:::ok
+    rx --> b{"BEACON?<br/>(grade de 100 ms)"}
+    b -- sim --> bcn["send_beacon()<br/>superquadro, n_slots, slot_us"]:::bench
     h -- POSITION --> up["tag_table_update()<br/>+ rtls_round_tracker_update()"]:::bench --> csv["print_position()<br/>CSV P,..."]:::bench
     rx --> t{"100 ms?"}
     t -- sim --> snap["tag_table_snapshot()<br/>(expira tags > 2 s)<br/>+ tags simuladas"]:::bench --> pub["rtls_host_if_publish()"]:::bench
@@ -448,6 +461,7 @@ flowchart LR
 | `print_position()` | uma linha `P,tag,round,t_ms,x,y,z,sx,sy,sz,n,flags,rx_cdbm,fp_cdbm,gw_ms` por POSITION |
 | `log_stats()` | resumo de 10 s: `GW: tag 0x1001: N posicoes, M lacunas (x% recebidas), RX d dBm` |
 | `add_sim_tags()` | com `CONFIG_RTLS_GATEWAY_SIM_TAGS` > 0, acrescenta tags sintéticas ao snapshot para testar a paginação do SPI |
+| `send_beacon()` | com `CONFIG_RTLS_GATEWAY_BEACON`, abre cada superquadro; o laço agenda em µs e mede o maior atraso em relação à grade (linha `GW: N BEACONs ... atraso max`) |
 
 > [!NOTE]
 > Lacuna de `round` não é sempre quadro perdido: o `round` da tag avança
@@ -467,6 +481,7 @@ Valida o driver isoladamente (M1).
 |-------|--------|-------|
 | `twr_math` | 11 | wrap de 40 bits, DS-TWR ideal e com ±20 ppm, intervalos, conversões de tempo, slots, RSL por Friis, tabela de viés, distância corrigida |
 | `frames` | 5 | montagem/parse, rejeição de PAN e tamanho, quadro grande demais, tamanhos, lacunas de `round` |
+| `tdma` | 4 | slot pelo ID, período, início dos slots, BEACONs perdidos e ressincronismo, BEACON inválido (T7.0) |
 | `loc_mat` | 3 | produto, Cholesky e inversa, rejeição de matriz singular (T4.14) |
 | `host_if` | 7 | CRC com o vetor "123456789", contagem de páginas, INFO, 20 tags em 3 páginas, tabela vazia, DRDY on/off, NOP e erros (T6.0) |
 | `loc` | 10 | multilateração exata 2D/3D e degenerada; EKF parado, em reta, com *outliers*, com 2 distâncias, NEES, reinício por tempo e por salto (T4.1–T4.7, T4.12–T4.13) |
@@ -545,12 +560,13 @@ flowchart LR
 | Versão do app | arquivo `VERSION` + `<zephyr/app_version.h>` | gateway | versão anunciada no `RTLS_INFO_GET` e no boot |
 | Semáforo | `K_SEM_DEFINE`, `k_sem_take/give` | `dw1000.c` | a ISR acorda a thread dona do rádio |
 | Timeouts / tempo | `sys_timepoint_*`, `K_USEC`, `K_TIMEOUT_ABS_MS` | `dw1000.c`, `twr_*.c`, tag | janelas de RX; ciclo de 100 ms sem deriva |
+| Tempo em ticks | `k_uptime_ticks()`, `K_TIMEOUT_ABS_TICKS`, `k_us_to_ticks_ceil64()` | tag e gateway (TDMA) | grade do BEACON e slots em µs, sem arredondar para ms (resolução do tick: ~30 µs) |
 | Timer | `K_TIMER_DEFINE` | `status_led.c` | heartbeat |
 | Workqueue | `K_WORK_DELAYABLE_DEFINE` | âncora | resumo sem parar o responder |
 | Ciclos de CPU | `k_cycle_get_32()` | initiator | tempo da rodada |
 | *Timing* | `timing_init()`, `timing_counter_get()`, `timing_cycles_to_ns()` | tag | tempo do EKF (TIMER2 a 16 MHz ou DWT; o `k_cycle_get_32()` do nRF52 conta o RTC, ~30 µs) |
 | Log | `LOG_MODULE_REGISTER`, `LOG_INF` | todos | logs por módulo, em modo diferido |
-| `printk` | `printk()` | tag | CSV síncrono na UART |
+| `printk` | `printk()` + `CONFIG_LOG_PRINTK` | tag, gateway | CSV na UART; formatado no buffer do log diferido, sem bloquear o rádio |
 | Devicetree | `SPI_DT_SPEC_GET`, `GPIO_DT_SPEC_GET`, `DT_CHOSEN` | `dw1000.c`, `host_if.c`, LEDs | pinos e barramentos sem número fixo no código |
 | ztest / twister | `ZTEST`, `zassert_*` | `tests/unit` | testes das bibliotecas puras |
 | Módulo externo | `zephyr/module.yml` | raiz | `lib/` e `drivers/` entram em qualquer app do workspace |
@@ -612,11 +628,11 @@ flowchart TB
 | DS-TWR | os prazos do RX usam o tick do kernel (~30 µs) | janelas com folga (`RX_MARGIN_US`) |
 | Âncora | a workqueue (prioridade −1) pode interromper o responder por algumas dezenas de µs a cada 10 s | trabalho curto (log diferido + LED); dentro da folga de 1 ms |
 | Logs | modo diferido: `LOG_*` só enfileira e não atrasa o rádio | `CONFIG_LOG_MODE_DEFERRED=y` nos apps |
-| CSV | `printk` é **síncrono**: ~15 ms de UART por ciclo com 4 âncoras | roda depois da rodada; limita taxas acima de ~40 Hz (ver `RTLS_TAG_CSV_OUTPUT`) |
+| CSV | com `CONFIG_LOG_PRINTK=y` (padrão), o `printk` só formata no buffer do log diferido; a UART (~20 ms por ciclo com 4 âncoras) fica com a thread de log. O risco é o buffer encher e descartar as linhas mais antigas | buffer de 4 KB (`CONFIG_LOG_BUFFER_SIZE`); o `rtls_log.py capture` avisa se houve descarte |
 | Configuração | Kconfig não tem ponto flutuante | grandezas inteiras com unidade no nome (`_MM`, `_US`, `_X10`) |
 | Testes | `native_sim` não roda no Windows | testes gravados na placa ou em Linux/WSL |
 | Reprodutibilidade | versão do Zephyr e dos módulos fixada | `west.yml` com `revision: v4.4.0` |
-| Memória | alocação estática; uso visível no build | tag: 54,8 KB flash / 11,8 KB RAM (com o EKF) |
+| Memória | alocação estática; uso visível no build | tag: 54,9 KB flash / 14,8 KB RAM; gateway: 46,5 KB / 16,4 KB (cada um com 4 KB de buffer de log) |
 
 ---
 
@@ -697,8 +713,9 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 
 | Parâmetro | Padrão | O que faz | Impacto ao alterar |
 |-----------|--------|-----------|--------------------|
-| `RTLS_TAG_CSV_OUTPUT` | `y` | linhas `R,...` (distâncias) e `L,...` (posição) na UART | ~20 ms de UART síncrona por ciclo com 4 âncoras; desligue acima de ~30 Hz |
+| `RTLS_TAG_CSV_OUTPUT` | `y` | linhas `R,...` (distâncias) e `L,...` (posição) na UART | não bloqueia o rádio (log diferido), mas ocupa ~20 ms de UART por ciclo com 4 âncoras: acima de ~30 Hz a UART não dá conta e o log descarta linhas |
 | `RTLS_TAG_STATS_PERIOD_S` | 10 (0 desliga) | resumo do TWR e do EKF na tag | menor dá mais detalhe; os contadores e o máximo do tempo do EKF zeram a cada resumo |
+| `RTLS_TAG_TDMA` | `n` | a tag só transmite no próprio slot do superquadro (M7) | sem gateway com BEACON a tag fica muda; o `RTLS_TAG_UPDATE_RATE_HZ` deixa de valer (o período vem do BEACON). Desligado nas bancadas do M2 ao M6 |
 | `RTLS_STATUS_LED_HEARTBEAT_MS` | 500 | meio período do LED verde | só visual |
 | `RTLS_DW1000_LOG_LEVEL_*`, `RTLS_TWR_LOG_LEVEL_*`, `RTLS_HOST_IF_LOG_LEVEL_*` | padrão do Zephyr | nível de log por módulo | `DBG` no `rtls_twr` registra cada quadro descartado e pode inundar a UART |
 
@@ -709,12 +726,15 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | `RTLS_GATEWAY_MAX_TAGS` | 16 (1–64) | capacidade da tabela | ~115 B de RAM por tag (entrada da tabela + cópias do snapshot e do resumo); tags além disso são ignoradas |
 | `RTLS_GATEWAY_TAG_TIMEOUT_MS` | 2000 | expiração de tag sem atualização | menor tira mais cedo uma tag que saiu; pequeno demais remove tags com perdas pontuais |
 | `RTLS_GATEWAY_PUBLISH_MS` | 100 | período do snapshot para o host | também limita a espera do RX entre publicações |
-| `RTLS_GATEWAY_CSV_OUTPUT` | `y` | linha `P,...` por POSITION na UART | ~6 ms de `printk` síncrono por linha, com o rádio parado: com 1–2 tags não pesa; com muitas tags desligue (o host recebe pelo SPI no M6) |
+| `RTLS_GATEWAY_CSV_OUTPUT` | `y` | linha `P,...` por POSITION na UART | não bloqueia o rádio (log diferido); cada linha ocupa ~6 ms de UART, então com 8 tags a 10 Hz a UART fica ~50 % ocupada. Para produção, desligue: o host recebe pelo SPI |
 | `RTLS_GATEWAY_STATS_PERIOD_S` | 10 (0 desliga) | resumo `GW:` por tag | os contadores zeram a cada resumo |
 | `RTLS_GATEWAY_SIM_TAGS` | 0 (0–32) | tags sintéticas no snapshot para o host | só para teste (T6.3/T6.4); em uso normal fica 0 |
+| `RTLS_GATEWAY_BEACON` | `n` | BEACON no início de cada superquadro (M7) | obrigatório para tags com `RTLS_TAG_TDMA`; inofensivo para tags em ciclo próprio (0,2 ms de ar a cada 100 ms) |
+| `RTLS_GATEWAY_TDMA_SLOTS` | 8 (1–32) | slots de tag por superquadro | período = 4 ms + slots × slot; mais slots = mais tags, com taxa menor |
+| `RTLS_GATEWAY_TDMA_SLOT_US` | 12000 (2000–60000) | duração de cada slot | precisa caber a rodada (~9,2 ms), o EKF, o POSITION e a guarda; menos que isso sobrepõe tags vizinhas |
 | `RTLS_HOST_IF_MAX_RECORDS` | 64 (1–255) | tamanho da cópia do snapshot | 26 B de RAM por registro; precisa ≥ `MAX_TAGS` + `SIM_TAGS` (`BUILD_ASSERT`) |
 | `RTLS_HOST_IF_STACK_SIZE` | 1024 | pilha da thread `host_if` | os buffers ficam fora da pilha; reduzir arrisca estouro |
-| `RTLS_HOST_IF_THREAD_PRIORITY` | −1 (cooperativa) | prioridade da `host_if` | ≥ 0 deixa a thread abaixo da `main`, e o SPIS demora a rearmar enquanto a `main` imprime o CSV |
+| `RTLS_HOST_IF_THREAD_PRIORITY` | −1 (cooperativa) | prioridade da `host_if` | ≥ 0 deixa a thread abaixo da `main`, e o SPIS só rearma quando a `main` bloquear (RX, timeout) |
 
 ### 4.9 Bancada (ping-pong)
 
@@ -732,6 +752,7 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | `CONFIG_FPU=y` | tag; testes na placa (`tests/unit/boards/decawave_dwm1001_dev.conf`) | `float` do EKF e `log10f` em hardware | sem ela tudo vira ponto flutuante emulado, bem mais lento |
 | `CONFIG_MAIN_STACK_SIZE=4096` | tag | buffers de quadro, conjuntos de distâncias e as matrizes do EKF (~1,2 KB no pior caminho) na pilha | reduzir arrisca estouro de pilha |
 | `CONFIG_TIMING_FUNCTIONS=y` | tag | tempo de `rtls_loc_update()` no resumo de 10 s (T4.9) | ocupa o TIMER2 do nRF52 (ou usa o DWT); desligar tira a medida |
+| `CONFIG_LOG_BUFFER_SIZE=4096` | tag, gateway | o CSV passa pelo log diferido; com 1 KB (padrão), picos descartam linhas | menor volta a perder linhas em picos; o `capture` avisa |
 | `CONFIG_LOG_MODE_DEFERRED=y` | todos | o log não bloqueia o rádio | o modo imediato bloquearia a thread do rádio durante a UART |
 | `CONFIG_SPI=y`, `CONFIG_GPIO=y` | todos | barramentos do DW1000 e LEDs | obrigatórios |
 | `CONFIG_ZTEST=y` | testes | framework de teste | — |
@@ -762,6 +783,11 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | `RTLS_HOST_IF_RECORDS_PER_PAGE` | 9 | `host_if.h` | limite de 255 B do SPIS |
 | `RTLS_HOST_IF_MAX_XFER` | 255 B | `host_if.h` | maior transação do SPIS (EasyDMA de 8 bits); tamanho dos buffers |
 | `SIM_TAG_BASE` | `0x1F00` | `apps/gateway/src/main.c` | primeiro ID das tags simuladas |
+| `RTLS_TDMA_BEACON_SEG_US` | 4000 µs | `tdma.h` | do início do BEACON ao slot 0; protocolo (tag e gateway) |
+| `RTLS_TDMA_MAX_MISSED` | 3 | `tdma.h` | BEACONs perdidos seguidos até a tag parar de transmitir |
+| `RTLS_TDMA_FIRST_TAG_ID` | `0x1001` | `tdma.h` | slot `k = id − 0x1001`: IDs de tag consecutivos |
+| `TDMA_BEACON_GUARD_US` | 1000 µs | `apps/tag/src/main.c` | janela de RX em volta do BEACON previsto |
+| `TDMA_SEARCH_US` | 1 s | `apps/tag/src/main.c` | janela de escuta sem sincronismo (entre elas, o resumo) |
 | Versão do gateway | 0.6.0 | `apps/gateway/VERSION` | anunciada no `RTLS_INFO_GET`; suba a cada marco que mudar o protocolo |
 | `RTLS_LOC_MAX_STATES` / `RTLS_MAT_MAX` | 6 | `loc.h`, `loc_mat.h` | estado 3D [p; v]; tamanho fixo das matrizes |
 | `LOC_GN_ITERS` / `LOC_GN_STOP_M` | 3 / 0,1 mm | `loc.c` | Gauss-Newton após o LS; para antes se o passo for menor |
