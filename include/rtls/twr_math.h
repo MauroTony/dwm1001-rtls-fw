@@ -41,6 +41,12 @@ static inline uint64_t rtls_us_to_dw_ticks(uint32_t us)
 	return (uint64_t)us * 638976ULL / 10ULL;
 }
 
+/** Ticks do DW1000 -> µs (truncado). */
+static inline uint64_t rtls_dw_ticks_to_us(uint64_t ticks)
+{
+	return ticks * 10ULL / 638976ULL;
+}
+
 /** µs -> "UWB microseconds" (1 UUS = 512/499,2 µs), unidade do W4R_TIM. */
 static inline uint32_t rtls_us_to_uus(uint32_t us)
 {
