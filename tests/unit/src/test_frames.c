@@ -92,4 +92,30 @@ ZTEST(frames, test_message_sizes)
 			     RTLS_FCS_LEN <= RTLS_FRAME_MAX_LEN);
 }
 
+/* T5.0: lacunas de round no gateway */
+ZTEST(frames, test_round_tracker)
+{
+	struct rtls_round_tracker trk = {0};
+
+	/* primeiro quadro e consecutivos: sem perda */
+	zassert_equal(rtls_round_tracker_update(&trk, 10, 1000), 0);
+	zassert_equal(rtls_round_tracker_update(&trk, 11, 1100), 0);
+
+	/* rodadas 12 e 13 sem POSITION */
+	zassert_equal(rtls_round_tracker_update(&trk, 14, 1400), 2);
+
+	/* repetido: ignorado, sem mexer na sequência */
+	zassert_equal(rtls_round_tracker_update(&trk, 14, 1400), -EALREADY);
+	zassert_equal(rtls_round_tracker_update(&trk, 15, 1500), 0);
+
+	/* volta do contador de 8 bits: 254 -> 1 perde 255 e 0 */
+	trk = (struct rtls_round_tracker){0};
+	zassert_equal(rtls_round_tracker_update(&trk, 254, 50000), 0);
+	zassert_equal(rtls_round_tracker_update(&trk, 1, 50300), 2);
+
+	/* tag reiniciou (t_ms voltou): recomeça sem contar perdas */
+	zassert_equal(rtls_round_tracker_update(&trk, 0, 120), 0);
+	zassert_equal(rtls_round_tracker_update(&trk, 1, 220), 0);
+}
+
 ZTEST_SUITE(frames, NULL, NULL, NULL, NULL, NULL);
