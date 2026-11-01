@@ -9,3 +9,21 @@ config RTLS_STATUS_LED_HEARTBEAT_MS
 	int "Meio período do heartbeat (ms)"
 	default 500
 	depends on RTLS_STATUS_LED
+
+config RTLS_WATCHDOG
+	bool "Watchdog da thread main (M8)"
+	depends on WATCHDOG
+	select HWINFO
+	help
+	  Liga o watchdog do nRF52 (alias watchdog0) e o alimenta a cada volta
+	  do laço da thread main. Se o laço do rádio travar, o nó reinicia. No
+	  boot, registra a causa do reset anterior.
+
+config RTLS_WATCHDOG_TIMEOUT_MS
+	int "Tempo do watchdog sem alimentação (ms)"
+	default 3000
+	range 500 60000
+	depends on RTLS_WATCHDOG
+	help
+	  Precisa ser maior que a volta mais longa do laço: na tag sem
+	  sincronismo TDMA, ~1 s; no responder da âncora, ~0,5 s.

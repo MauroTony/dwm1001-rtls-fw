@@ -1,2 +1,3 @@
 zephyr_library()
-zephyr_library_sources(status_led.c)
+zephyr_library_sources_ifdef(CONFIG_RTLS_STATUS_LED status_led.c)
+zephyr_library_sources_ifdef(CONFIG_RTLS_WATCHDOG watchdog.c)
