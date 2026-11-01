@@ -1,12 +1,14 @@
 /*
  * Firmware da TAG.
  *
- * A cada ciclo (CONFIG_RTLS_TAG_UPDATE_RATE_HZ) mede a distância até as
- * âncoras por DS-TWR, estima a posição com o EKF e envia o resultado ao
- * gateway. Fluxo: docs/02-arquitetura.md, seção 4.1.
+ * A cada ciclo mede a distância até as âncoras por DS-TWR, estima a posição
+ * com o EKF e envia o resultado ao gateway. Fluxo: docs/02-arquitetura.md,
+ * seção 4.1. O ciclo é próprio (CONFIG_RTLS_TAG_UPDATE_RATE_HZ) ou, com
+ * CONFIG_RTLS_TAG_TDMA, o slot da tag no superquadro do gateway (M7).
  */
 
 #include <errno.h>
+#include <string.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -17,14 +19,31 @@
 #include <rtls/frames.h>
 #include <rtls/loc.h>
 #include <rtls/status_led.h>
+#include <rtls/tdma.h>
 #include <rtls/twr.h>
+#include <rtls/twr_math.h>
 
 LOG_MODULE_REGISTER(tag, LOG_LEVEL_INF);
 
 #define CYCLE_MS (1000 / CONFIG_RTLS_TAG_UPDATE_RATE_HZ)
 
+/* TDMA: o RX abre esse tanto antes do BEACON previsto e fecha esse tanto depois. */
+#define TDMA_BEACON_GUARD_US 1000
+/* TDMA: sem sincronismo, escuta em janelas desse tamanho (entre elas, o resumo). */
+#define TDMA_SEARCH_US 1000000
+
 static struct rtls_loc_ctx loc;
 static uint8_t mac_seq;
+static int64_t next_stats_ms;
+
+/* Sincronismo com o superquadro do gateway (CONFIG_RTLS_TAG_TDMA). */
+static struct rtls_tdma_sync tdma;
+static struct {
+	uint32_t beacons;
+	uint32_t missed;
+	uint32_t lost_sync; /**< vezes que parou de transmitir */
+	uint32_t late_slot; /**< o slot já tinha passado quando foi calculado */
+} tdma_stats;
 
 /* Tempo de rtls_loc_update() desde o último resumo (T4.9). */
 static uint32_t loc_last_us;
@@ -120,6 +139,14 @@ static void log_stats(void)
 	struct rtls_loc_stats ls;
 	uint32_t pct;
 
+	if (IS_ENABLED(CONFIG_RTLS_TAG_TDMA)) {
+		LOG_INF("TDMA: %s, %u BEACONs, %u perdidos, %u vezes sem sincronismo, "
+			"%u slots atrasados",
+			tdma.synced ? "sincronizado" : "SEM SINCRONISMO", tdma_stats.beacons,
+			tdma_stats.missed, tdma_stats.lost_sync, tdma_stats.late_slot);
+		memset(&tdma_stats, 0, sizeof(tdma_stats));
+	}
+
 	rtls_twr_initiator_get_stats(&st, true);
 	rtls_loc_get_stats(&loc, &ls, true);
 	if (st.rounds == 0) {
@@ -141,6 +168,158 @@ static void log_stats(void)
 	loc_max_us = 0;
 }
 
+static void maybe_log_stats(void)
+{
+	if (CONFIG_RTLS_TAG_STATS_PERIOD_S > 0 && k_uptime_get() >= next_stats_ms) {
+		log_stats();
+		next_stats_ms += CONFIG_RTLS_TAG_STATS_PERIOD_S * 1000;
+	}
+}
+
+/* Uma rodada completa: DS-TWR, CSV, EKF e POSITION. */
+static void run_cycle(void)
+{
+	struct rtls_range_set ranges;
+	struct rtls_position pos;
+
+	if (rtls_twr_initiator_run_round(&ranges) != 0) {
+		return;
+	}
+
+	rtls_status_led_activity();
+	print_ranges(&ranges);
+
+	/* -EAGAIN: sem posição até ter distâncias para a multilateração */
+	if (timed_loc_update(&ranges, &pos) == 0) {
+		print_position(&pos, ranges.round);
+		(void)send_position(&pos, ranges.round);
+	}
+}
+
+/* Ciclo próprio a CONFIG_RTLS_TAG_UPDATE_RATE_HZ, sem gateway (M3-M6). */
+static void free_loop(void)
+{
+	int64_t next_ms = k_uptime_get();
+
+	while (true) {
+		next_ms += CYCLE_MS;
+		run_cycle();
+		maybe_log_stats();
+		k_sleep(K_TIMEOUT_ABS_MS(next_ms));
+	}
+}
+
+static int64_t now_us(void)
+{
+	return (int64_t)k_ticks_to_us_floor64(k_uptime_ticks());
+}
+
+static void sleep_until_us(int64_t t_us)
+{
+	k_sleep(K_TIMEOUT_ABS_TICKS(k_us_to_ticks_ceil64(MAX(t_us, 0))));
+}
+
+/*
+ * Instante local (µs) em que o quadro começou a chegar: o RX_TIME do DW1000
+ * comparado com o relógio dele agora. Tira a latência ISR -> thread da
+ * medida; sobra a resolução do tick do kernel (~30 µs).
+ */
+static int64_t frame_start_us(const struct dw1000_rx_info *info)
+{
+	const uint64_t age = rtls_dw_ts_diff(dw1000_sys_time(), info->rx_ts);
+
+	return now_us() - (int64_t)rtls_dw_ticks_to_us(age);
+}
+
+/* Escuta até @p until_us; true se um BEACON do gateway (re)sincronizou a tag. */
+static bool wait_beacon(int64_t until_us)
+{
+	uint8_t frame[RTLS_FRAME_MAX_LEN];
+	struct dw1000_rx_info info;
+	struct rtls_msg_beacon msg;
+	struct rtls_mac_hdr hdr;
+	const uint8_t *payload;
+	size_t payload_len;
+
+	while (now_us() < until_us) {
+		const int len = dw1000_receive(frame, sizeof(frame), &info,
+					       K_TIMEOUT_ABS_TICKS(k_us_to_ticks_ceil64(until_us)));
+
+		if (len == -EAGAIN) {
+			break;
+		}
+		/* POLL e FINAL de outras tags também chegam (broadcast): ignora. */
+		if (len <= 0 ||
+		    rtls_frame_parse(frame, (size_t)len, CONFIG_RTLS_PAN_ID, &hdr, &payload,
+				     &payload_len) != RTLS_MSG_BEACON ||
+		    hdr.src != RTLS_ADDR_GATEWAY) {
+			continue;
+		}
+
+		memcpy(&msg, payload, sizeof(msg));
+		if (rtls_tdma_on_beacon(&tdma, &msg, frame_start_us(&info)) == 0) {
+			tdma_stats.beacons++;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+ * TDMA (M7): a rodada só sai no slot k = RTLS_NODE_ID - 0x1001 do superquadro
+ * anunciado pelo BEACON. Sem BEACON por RTLS_TDMA_MAX_MISSED superquadros, a
+ * tag para de transmitir e fica escutando até sincronizar de novo.
+ */
+static void tdma_loop(void)
+{
+	const int slot = rtls_tdma_slot_of(CONFIG_RTLS_NODE_ID);
+	bool range_warned = false;
+
+	LOG_INF("TDMA: slot %d; procurando o BEACON do gateway", slot);
+	while (true) {
+		int64_t t_us;
+
+		if (!tdma.synced) {
+			/* Sem sincronismo a tag não transmite: só escuta. */
+			if (wait_beacon(now_us() + TDMA_SEARCH_US)) {
+				LOG_INF("TDMA: sincronizado no superquadro %u (%u slots de %u us)",
+					tdma.superframe, tdma.n_slots, tdma.slot_us);
+			}
+			maybe_log_stats();
+			continue;
+		}
+
+		if (rtls_tdma_slot_start(&tdma, slot, &t_us) == -ERANGE) {
+			if (!range_warned) {
+				LOG_ERR("TDMA: slot %d fora do superquadro (%u slots); a tag nao "
+					"transmite",
+					slot, tdma.n_slots);
+				range_warned = true;
+			}
+		} else if (t_us < now_us()) {
+			tdma_stats.late_slot++;
+		} else {
+			sleep_until_us(t_us);
+			run_cycle();
+		}
+		maybe_log_stats();
+
+		/* Próximo BEACON: a janela de RX abre um pouco antes do previsto. */
+		t_us = rtls_tdma_next_beacon(&tdma);
+		sleep_until_us(t_us - TDMA_BEACON_GUARD_US);
+		if (!wait_beacon(t_us + TDMA_BEACON_GUARD_US)) {
+			tdma_stats.missed++;
+			rtls_tdma_on_missed(&tdma);
+			if (!tdma.synced) {
+				tdma_stats.lost_sync++;
+				LOG_WRN("TDMA: %d BEACONs perdidos seguidos; a tag para de transmitir",
+					RTLS_TDMA_MAX_MISSED);
+			}
+		}
+	}
+}
+
 int main(void)
 {
 	const struct dw1000_phy_config phy =
@@ -151,12 +330,17 @@ int main(void)
 		.n_anchors = CONFIG_RTLS_TAG_NUM_ANCHORS,
 	};
 	struct rtls_loc_cfg loc_cfg;
-	int64_t next_ms, next_stats_ms;
 	int err;
 
-	LOG_INF("RTLS tag 0x%04x: %d Hz, %d ancoras a partir de 0x%04x", CONFIG_RTLS_NODE_ID,
-		CONFIG_RTLS_TAG_UPDATE_RATE_HZ, CONFIG_RTLS_TAG_NUM_ANCHORS,
-		CONFIG_RTLS_TAG_ANCHOR_BASE_ID);
+	if (IS_ENABLED(CONFIG_RTLS_TAG_TDMA)) {
+		LOG_INF("RTLS tag 0x%04x: TDMA (slot do BEACON), %d ancoras a partir de 0x%04x",
+			CONFIG_RTLS_NODE_ID, CONFIG_RTLS_TAG_NUM_ANCHORS,
+			CONFIG_RTLS_TAG_ANCHOR_BASE_ID);
+	} else {
+		LOG_INF("RTLS tag 0x%04x: %d Hz, %d ancoras a partir de 0x%04x",
+			CONFIG_RTLS_NODE_ID, CONFIG_RTLS_TAG_UPDATE_RATE_HZ,
+			CONFIG_RTLS_TAG_NUM_ANCHORS, CONFIG_RTLS_TAG_ANCHOR_BASE_ID);
+	}
 
 	err = rtls_status_led_init();
 	if (err) {
@@ -194,33 +378,11 @@ int main(void)
 		loc_cfg.dim, CONFIG_RTLS_LOC_RANGE_STD_MM, CONFIG_RTLS_LOC_ACCEL_STD_MMS2,
 		CONFIG_RTLS_LOC_GATE_CHI2_X100, CONFIG_RTLS_LOC_TAG_HEIGHT_MM);
 
-	next_ms = k_uptime_get();
-	next_stats_ms = next_ms + CONFIG_RTLS_TAG_STATS_PERIOD_S * 1000;
-	while (true) {
-		struct rtls_range_set ranges;
-		struct rtls_position pos;
-
-		next_ms += CYCLE_MS;
-
-		err = rtls_twr_initiator_run_round(&ranges);
-		if (err == 0) {
-			rtls_status_led_activity();
-			print_ranges(&ranges);
-
-			/* -EAGAIN: sem posição até ter distâncias para a multilateração */
-			err = timed_loc_update(&ranges, &pos);
-			if (err == 0) {
-				print_position(&pos, ranges.round);
-				err = send_position(&pos, ranges.round);
-			}
-		}
-
-		if (CONFIG_RTLS_TAG_STATS_PERIOD_S > 0 && k_uptime_get() >= next_stats_ms) {
-			log_stats();
-			next_stats_ms += CONFIG_RTLS_TAG_STATS_PERIOD_S * 1000;
-		}
-
-		k_sleep(K_TIMEOUT_ABS_MS(next_ms));
+	next_stats_ms = k_uptime_get() + CONFIG_RTLS_TAG_STATS_PERIOD_S * 1000;
+	if (IS_ENABLED(CONFIG_RTLS_TAG_TDMA)) {
+		tdma_loop();
+	} else {
+		free_loop();
 	}
 
 	return 0;

@@ -22,6 +22,16 @@ config RTLS_TAG_NUM_ANCHORS
 	default 4
 	range 1 4
 
+config RTLS_TAG_TDMA
+	bool "Transmite só no slot do superquadro TDMA (M7)"
+	help
+	  A tag espera o BEACON do gateway (CONFIG_RTLS_GATEWAY_BEACON=y) e
+	  faz a rodada no slot k = RTLS_NODE_ID - 0x1001 do superquadro. Sem
+	  BEACON por 3 superquadros seguidos, para de transmitir até
+	  sincronizar de novo. O período vem do BEACON, e
+	  RTLS_TAG_UPDATE_RATE_HZ é ignorado. Desligado, a tag roda no próprio
+	  ciclo, como nas bancadas do M2 ao M6, que não usam gateway.
+
 config RTLS_TAG_CSV_OUTPUT
 	bool "Imprime cada distância e cada posição em CSV na UART"
 	default y

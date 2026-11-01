@@ -19,6 +19,7 @@
 #include <rtls/frames.h>
 #include <rtls/host_if.h>
 #include <rtls/status_led.h>
+#include <rtls/tdma.h>
 
 #include "tag_table.h"
 
@@ -31,6 +32,48 @@ BUILD_ASSERT(SNAPSHOT_RECORDS <= CONFIG_RTLS_HOST_IF_MAX_RECORDS,
 
 /* Primeiro ID das tags simuladas (CONFIG_RTLS_GATEWAY_SIM_TAGS). */
 #define SIM_TAG_BASE 0x1F00
+
+/* Superquadro TDMA: 4 ms de BEACON + slots de tag (docs/03, seção 5.2). */
+#define SUPERFRAME_US                                                                              \
+	(RTLS_TDMA_BEACON_SEG_US + CONFIG_RTLS_GATEWAY_TDMA_SLOTS * CONFIG_RTLS_GATEWAY_TDMA_SLOT_US)
+
+static uint8_t mac_seq;
+
+/* BEACONs desde o último resumo (T7.1: período estável). */
+static struct {
+	uint32_t sent;
+	uint32_t errors;
+	int64_t max_late_us; /**< maior atraso em relação à grade de 100 ms */
+} beacon_stats;
+
+static int64_t now_us(void)
+{
+	return (int64_t)k_ticks_to_us_floor64(k_uptime_ticks());
+}
+
+/* BEACON em broadcast: abre o superquadro @p superframe. */
+static int send_beacon(uint16_t superframe)
+{
+	const struct rtls_msg_beacon msg = {
+		.type = RTLS_MSG_BEACON,
+		.superframe = superframe,
+		.n_slots = CONFIG_RTLS_GATEWAY_TDMA_SLOTS,
+		.slot_us = CONFIG_RTLS_GATEWAY_TDMA_SLOT_US,
+	};
+	struct rtls_mac_hdr hdr;
+	uint8_t frame[RTLS_FRAME_MAX_LEN];
+	int len;
+
+	rtls_mac_hdr_init(&hdr, mac_seq++, CONFIG_RTLS_PAN_ID, RTLS_ADDR_BROADCAST,
+			  CONFIG_RTLS_NODE_ID);
+	len = rtls_frame_build(frame, sizeof(frame), &hdr, &msg, sizeof(msg));
+	if (len < 0) {
+		return len;
+	}
+
+	/* O RX já está desligado: dw1000_receive() o desliga no timeout. */
+	return dw1000_transmit(frame, len, NULL, NULL);
+}
 
 /* Uma linha CSV por POSITION recebido (lida por tools/rtls_log.py). */
 static void print_position(uint16_t tag_id, const struct rtls_msg_position *msg,
@@ -79,6 +122,12 @@ static void log_stats(void)
 {
 	static struct tag_stats stats[CONFIG_RTLS_GATEWAY_MAX_TAGS];
 	const size_t n = tag_table_get_stats(stats, ARRAY_SIZE(stats), true);
+
+	if (IS_ENABLED(CONFIG_RTLS_GATEWAY_BEACON)) {
+		LOG_INF("GW: %u BEACONs, %u erros de TX, atraso max %d us", beacon_stats.sent,
+			beacon_stats.errors, (int)beacon_stats.max_late_us);
+		memset(&beacon_stats, 0, sizeof(beacon_stats));
+	}
 
 	if (n == 0) {
 		LOG_INF("GW: nenhuma tag ativa");
@@ -142,11 +191,13 @@ int main(void)
 		.fw_version = {APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_PATCHLEVEL},
 		.gateway_id = CONFIG_RTLS_NODE_ID,
 		.capacity = CONFIG_RTLS_GATEWAY_MAX_TAGS,
-		.superframe_ms = CONFIG_RTLS_GATEWAY_PUBLISH_MS,
+		.superframe_ms = IS_ENABLED(CONFIG_RTLS_GATEWAY_BEACON) ? SUPERFRAME_US / 1000
+									: CONFIG_RTLS_GATEWAY_PUBLISH_MS,
 	};
 	uint8_t frame[RTLS_FRAME_MAX_LEN];
 	struct dw1000_rx_info info;
-	int64_t next_publish_ms, next_stats_ms;
+	int64_t next_publish_us, next_stats_us, next_beacon_us;
+	uint16_t superframe = 0;
 	int err;
 
 	LOG_INF("RTLS gateway 0x%04x v%s: ate %d tags", CONFIG_RTLS_NODE_ID, APP_VERSION_STRING,
@@ -154,6 +205,10 @@ int main(void)
 	if (CONFIG_RTLS_GATEWAY_SIM_TAGS > 0) {
 		LOG_WRN("modo de teste: %d tags simuladas no snapshot (0x%04x...)",
 			CONFIG_RTLS_GATEWAY_SIM_TAGS, SIM_TAG_BASE);
+	}
+	if (IS_ENABLED(CONFIG_RTLS_GATEWAY_BEACON)) {
+		LOG_INF("TDMA: BEACON a cada %d us, %d slots de %d us", SUPERFRAME_US,
+			CONFIG_RTLS_GATEWAY_TDMA_SLOTS, CONFIG_RTLS_GATEWAY_TDMA_SLOT_US);
 	}
 
 	err = rtls_status_led_init();
@@ -179,24 +234,47 @@ int main(void)
 		return 0;
 	}
 
-	next_publish_ms = k_uptime_get() + CONFIG_RTLS_GATEWAY_PUBLISH_MS;
-	next_stats_ms = k_uptime_get() + CONFIG_RTLS_GATEWAY_STATS_PERIOD_S * 1000;
+	/* Agenda em µs: o BEACON precisa de uma grade estável de 100 ms. */
+	next_beacon_us = now_us();
+	next_publish_us = now_us() + CONFIG_RTLS_GATEWAY_PUBLISH_MS * 1000LL;
+	next_stats_us = now_us() + CONFIG_RTLS_GATEWAY_STATS_PERIOD_S * 1000000LL;
 	while (true) {
-		const int64_t wait_ms = MAX(next_publish_ms - k_uptime_get(), 0);
-		int len = dw1000_receive(frame, sizeof(frame), &info, K_MSEC(wait_ms));
+		int64_t wake_us = next_publish_us;
+		int len;
 
+		if (IS_ENABLED(CONFIG_RTLS_GATEWAY_BEACON)) {
+			wake_us = MIN(wake_us, next_beacon_us);
+		}
+		len = dw1000_receive(frame, sizeof(frame), &info,
+				     K_TIMEOUT_ABS_TICKS(k_us_to_ticks_ceil64(MAX(wake_us, 0))));
 		if (len > 0) {
 			handle_frame(frame, (size_t)len, &info);
 		}
 
-		if (k_uptime_get() >= next_publish_ms) {
-			publish_snapshot();
-			next_publish_ms += CONFIG_RTLS_GATEWAY_PUBLISH_MS;
+		if (IS_ENABLED(CONFIG_RTLS_GATEWAY_BEACON) && now_us() >= next_beacon_us) {
+			const int64_t late_us = now_us() - next_beacon_us;
+
+			if (send_beacon(superframe++) == 0) {
+				beacon_stats.sent++;
+				beacon_stats.max_late_us = MAX(beacon_stats.max_late_us, late_us);
+			} else {
+				beacon_stats.errors++;
+			}
+			next_beacon_us += SUPERFRAME_US;
+			/* Atrasou mais de um superquadro: recomeça a grade a partir de agora. */
+			if (now_us() >= next_beacon_us) {
+				next_beacon_us = now_us() + SUPERFRAME_US;
+			}
 		}
 
-		if (CONFIG_RTLS_GATEWAY_STATS_PERIOD_S > 0 && k_uptime_get() >= next_stats_ms) {
+		if (now_us() >= next_publish_us) {
+			publish_snapshot();
+			next_publish_us += CONFIG_RTLS_GATEWAY_PUBLISH_MS * 1000LL;
+		}
+
+		if (CONFIG_RTLS_GATEWAY_STATS_PERIOD_S > 0 && now_us() >= next_stats_us) {
 			log_stats();
-			next_stats_ms += CONFIG_RTLS_GATEWAY_STATS_PERIOD_S * 1000;
+			next_stats_us += CONFIG_RTLS_GATEWAY_STATS_PERIOD_S * 1000000LL;
 		}
 	}
 

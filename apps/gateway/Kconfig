@@ -30,13 +30,38 @@ config RTLS_GATEWAY_CSV_OUTPUT
 	  Uma linha por POSITION: P,<tag>,<round>,<t_ms>,<x_mm>,<y_mm>,<z_mm>,
 	  <sx_mm>,<sy_mm>,<sz_mm>,<n_ranges>,<flags>,<rx_cdbm>,<fp_cdbm>,<gw_ms>,
 	  onde t_ms é o uptime da tag no POLL da rodada e gw_ms o uptime do
-	  gateway na recepção. Lida por tools/rtls_log.py. O printk é síncrono
-	  (~6 ms por linha a 115200 bps) e o rádio não escuta enquanto imprime:
-	  desligue com muitas tags.
+	  gateway na recepção. Lida por tools/rtls_log.py. O printk passa
+	  pelo log diferido (CONFIG_LOG_PRINTK) e não bloqueia o rádio, mas
+	  cada linha ocupa ~6 ms de UART a 115200 bps: com muitas tags,
+	  desligue e use o SPI.
 
 config RTLS_GATEWAY_STATS_PERIOD_S
 	int "Período do resumo de recepção por tag (s; 0 desliga)"
 	default 10
+
+config RTLS_GATEWAY_BEACON
+	bool "Transmite o BEACON do superquadro TDMA (M7)"
+	help
+	  Abre cada superquadro com um BEACON em broadcast (superquadro,
+	  n_slots, slot_us). As tags com CONFIG_RTLS_TAG_TDMA=y só transmitem
+	  no próprio slot depois de ouvi-lo (docs/03-protocolo-uwb.md, 5.2).
+	  Desligado, as tags rodam em ciclo próprio (M3-M6).
+
+config RTLS_GATEWAY_TDMA_SLOTS
+	int "Slots de tag por superquadro"
+	default 8
+	range 1 32
+	help
+	  O superquadro dura 4 ms (BEACON) + slots x RTLS_GATEWAY_TDMA_SLOT_US.
+	  8 x 12 ms = 100 ms: 8 tags a 10 Hz.
+
+config RTLS_GATEWAY_TDMA_SLOT_US
+	int "Duração do slot de cada tag (us)"
+	default 12000
+	range 2000 60000
+	help
+	  Precisa caber a rodada DS-TWR (~9,2 ms com 4 âncoras e 1 ms de
+	  T_reply/T_slot), o EKF, o POSITION e uma guarda (docs/03, 5.3).
 
 config RTLS_GATEWAY_SIM_TAGS
 	int "Tags simuladas no snapshot para o host (teste do M6)"
