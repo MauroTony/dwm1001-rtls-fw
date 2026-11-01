@@ -34,9 +34,9 @@ config RTLS_HOST_IF_THREAD_PRIORITY
 	default -1
 	help
 	  Negativa = cooperativa, acima da main (prioridade 0). Assim o SPIS é
-	  rearmado logo depois de cada transação, mesmo com a main ocupada no
-	  printk do CSV. A thread só faz cópia e CRC de até 245 B por
-	  transação e volta a bloquear no spi_transceive().
+	  rearmado logo depois de cada transação, sem esperar a main. A thread
+	  só faz cópia e CRC de até 245 B por transação e volta a bloquear no
+	  spi_transceive().
 
 module = RTLS_HOST_IF
 module-str = rtls_host_if

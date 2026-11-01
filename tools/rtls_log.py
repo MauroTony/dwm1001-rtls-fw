@@ -40,6 +40,9 @@ GW_RE = re.compile(
 )
 GW_FIELDS = ["tag", "round", "t_ms", "x_mm", "y_mm", "z_mm", "sx_mm", "sy_mm", "sz_mm",
              "n_ranges", "flags", "rx_power_cdbm", "fp_power_cdbm", "gw_ms"]
+# Linha do log do Zephyr quando o buffer do log diferido enche: o CSV
+# (printk via CONFIG_LOG_PRINTK) perdeu linhas.
+DROPPED_RE = re.compile(r"--- (\d+) messages dropped ---")
 # Colunas que ficam como texto (IDs em hexadecimal).
 TEXT_FIELDS = ("anchor", "tag")
 # RTLS_POS_FLAG_* (include/rtls/frames.h)
@@ -146,6 +149,7 @@ def cmd_capture(args):
     ]
     for sink in sinks:
         sink.update(file=None, writer=None, count=0)
+    dropped = 0
 
     deadline = time.monotonic() + args.seconds if args.seconds else None
     with serial.Serial(args.port, args.baud, timeout=1) as port:
@@ -155,6 +159,10 @@ def cmd_capture(args):
                 line = port.readline().decode(errors="replace")
                 if args.echo and line:
                     print(line, end="")
+                drop = DROPPED_RE.search(line)
+                if drop:
+                    dropped += int(drop.group(1))
+                    continue
                 for sink in sinks:
                     row = sink["parse"](line)
                     if not row:
@@ -178,6 +186,9 @@ def cmd_capture(args):
         print(f"{sink['count']} {sink['what']} gravadas em {sink['path']}")
     if not written:
         print("nenhuma linha R, L ou P recebida: confira a porta e o firmware (--echo mostra tudo)")
+    if dropped:
+        print(f"ATENÇÃO: o firmware descartou {dropped} mensagens do log durante a captura; "
+              "o CSV está incompleto (aumente CONFIG_LOG_BUFFER_SIZE)")
 
 
 def cmd_stats(args):
