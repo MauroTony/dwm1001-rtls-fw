@@ -84,6 +84,10 @@ ZTEST(twr_math, test_time_unit_conversions)
 {
 	/* 1 ms = 63 897 600 ticks = 975 UWB µs. */
 	zassert_equal(rtls_us_to_dw_ticks(1000), 63897600ULL);
+	zassert_equal(rtls_dw_ticks_to_us(63897600ULL), 1000);
+	zassert_equal(rtls_dw_ticks_to_us(rtls_us_to_dw_ticks(125)), 125);
+	/* truncado: 63 897 ticks ficam abaixo de 1 µs */
+	zassert_equal(rtls_dw_ticks_to_us(63897ULL), 0);
 	zassert_equal(rtls_us_to_uus(1000), 975);
 	zassert_equal(rtls_us_to_uus(0), 0);
 }
