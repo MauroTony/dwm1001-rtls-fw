@@ -15,6 +15,7 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/timing/timing.h>
 
+#include <rtls/config.h>
 #include <rtls/dw1000.h>
 #include <rtls/frames.h>
 #include <rtls/loc.h>
@@ -22,6 +23,7 @@
 #include <rtls/tdma.h>
 #include <rtls/twr.h>
 #include <rtls/twr_math.h>
+#include <rtls/watchdog.h>
 
 LOG_MODULE_REGISTER(tag, LOG_LEVEL_INF);
 
@@ -35,6 +37,12 @@ LOG_MODULE_REGISTER(tag, LOG_LEVEL_INF);
 static struct rtls_loc_ctx loc;
 static uint8_t mac_seq;
 static int64_t next_stats_ms;
+
+/* Do registro de parâmetros (M8): Kconfig como padrão, NVS por cima. */
+static uint16_t node_id;
+static uint16_t pan_id;
+static uint16_t anchor_base;
+static uint8_t n_anchors;
 
 /* Sincronismo com o superquadro do gateway (CONFIG_RTLS_TAG_TDMA). */
 static struct rtls_tdma_sync tdma;
@@ -79,8 +87,7 @@ static int send_position(const struct rtls_position *pos, uint8_t round)
 		msg.std_mm[i] = std_to_mm(pos->std_m[i]);
 	}
 
-	rtls_mac_hdr_init(&hdr, mac_seq++, CONFIG_RTLS_PAN_ID, RTLS_ADDR_GATEWAY,
-			  CONFIG_RTLS_NODE_ID);
+	rtls_mac_hdr_init(&hdr, mac_seq++, pan_id, RTLS_ADDR_GATEWAY, node_id);
 	len = rtls_frame_build(frame, sizeof(frame), &hdr, &msg, sizeof(msg));
 	if (len < 0) {
 		return len;
@@ -99,9 +106,9 @@ static void print_ranges(const struct rtls_range_set *set)
 	for (int i = 0; i < set->count; i++) {
 		const struct rtls_range *r = &set->ranges[i];
 
-		printk("R,%u,%u,%04x,%d,%d,%d,%d\n", set->round, (uint32_t)set->t_ms, r->anchor_id,
-		       m_to_mm(r->distance_m), r->rx_power_cdbm, r->fp_power_cdbm,
-		       m_to_mm(r->distance_raw_m));
+		printk("R,%u,%u,%04x,%d,%d,%d,%d,%d\n", set->round, (uint32_t)set->t_ms,
+		       r->anchor_id, m_to_mm(r->distance_m), r->rx_power_cdbm, r->fp_power_cdbm,
+		       m_to_mm(r->distance_raw_m), r->resp_fp_power_cdbm);
 	}
 }
 
@@ -156,15 +163,16 @@ static void log_stats(void)
 	LOG_INF("TWR: %u rodadas, %u%% completas, ultima %u us, max %u us, TX atrasado %u",
 		st.rounds, 100U * st.rounds_complete / st.rounds, st.last_round_us,
 		st.max_round_us, st.late_tx);
-	for (int i = 0; i < CONFIG_RTLS_TAG_NUM_ANCHORS; i++) {
+	for (int i = 0; i < n_anchors; i++) {
 		pct = 100U * st.anchors[i].range_ok / st.rounds;
 		LOG_INF("  ancora 0x%04x: RESP %u, distancias %u (%u%%), invalidas %u",
-			CONFIG_RTLS_TAG_ANCHOR_BASE_ID + i, st.anchors[i].resp_ok,
+			anchor_base + i, st.anchors[i].resp_ok,
 			st.anchors[i].range_ok, pct, st.anchors[i].invalid);
 	}
-	LOG_INF("LOC: %u posicoes, %u aceitas, %u rejeitadas, %u reinicios, "
-		"EKF ultimo %u us, max %u us",
-		ls.updates, ls.accepted, ls.rejected, ls.resets, loc_last_us, loc_max_us);
+	LOG_INF("LOC: %u posicoes, %u aceitas, %u rejeitadas, %u reinicios, %u ponderadas por "
+		"NLOS, EKF ultimo %u us, max %u us",
+		ls.updates, ls.accepted, ls.rejected, ls.resets, ls.nlos_weighted, loc_last_us,
+		loc_max_us);
 	loc_max_us = 0;
 }
 
@@ -174,6 +182,76 @@ static void maybe_log_stats(void)
 		log_stats();
 		next_stats_ms += CONFIG_RTLS_TAG_STATS_PERIOD_S * 1000;
 	}
+}
+
+/* Configuração do EKF a partir do registro de parâmetros. */
+static void loc_cfg_from_registry(struct rtls_loc_cfg *cfg)
+{
+	rtls_loc_default_cfg(cfg);
+	cfg->dim = rtls_config_get(RTLS_CFG_LOC_MODE_3D) ? RTLS_LOC_3D : RTLS_LOC_2D;
+	cfg->tag_height_m = rtls_config_get(RTLS_CFG_LOC_TAG_HEIGHT) / 1000.0f;
+	cfg->range_std_m = rtls_config_get(RTLS_CFG_LOC_RANGE_STD) / 1000.0f;
+	cfg->accel_std_mps2 = rtls_config_get(RTLS_CFG_LOC_ACCEL_STD) / 1000.0f;
+	cfg->gate_chi2 = rtls_config_get(RTLS_CFG_LOC_GATE_CHI2) / 100.0f;
+	cfg->nlos_weighting = rtls_config_get(RTLS_CFG_LOC_NLOS_WEIGHT) != 0;
+}
+
+static void log_loc_cfg(const struct rtls_loc_cfg *cfg)
+{
+	LOG_INF("LOC %dD: sigma_r %d mm, sigma_a %d mm/s2, gating %d/100, z fixo (2D) %d mm, "
+		"NLOS %s",
+		cfg->dim, rtls_config_get(RTLS_CFG_LOC_RANGE_STD),
+		rtls_config_get(RTLS_CFG_LOC_ACCEL_STD), rtls_config_get(RTLS_CFG_LOC_GATE_CHI2),
+		rtls_config_get(RTLS_CFG_LOC_TAG_HEIGHT),
+		cfg->nlos_weighting ? "ponderado" : "sem ponderacao");
+}
+
+static void apply_antenna_delay(void)
+{
+	const uint16_t tx = (uint16_t)rtls_config_get(RTLS_CFG_TX_ANT_DLY);
+	const uint16_t rx = (uint16_t)rtls_config_get(RTLS_CFG_RX_ANT_DLY);
+
+	if (dw1000_set_antenna_delay(tx, rx) == 0) {
+		LOG_INF("atrasos de antena: TX %u, RX %u", tx, rx);
+	}
+}
+
+/*
+ * Parâmetros de classe imediata alterados pelo shell, aplicados pela thread
+ * main entre rodadas. Mudar o EKF reinicia o filtro. ID, PAN e âncoras
+ * valem no próximo boot.
+ */
+static void apply_config_changes(void)
+{
+	bool loc_changed = false;
+	uint16_t key;
+
+	while ((key = rtls_config_next_change()) != 0) {
+		if (key == RTLS_CFG_TX_ANT_DLY || key == RTLS_CFG_RX_ANT_DLY) {
+			apply_antenna_delay();
+		} else if (key >= RTLS_CFG_LOC_MODE_3D && key <= RTLS_CFG_LOC_NLOS_WEIGHT) {
+			loc_changed = true;
+		}
+	}
+
+	if (loc_changed) {
+		struct rtls_loc_cfg cfg;
+
+		loc_cfg_from_registry(&cfg);
+		if (rtls_loc_init(&loc, &cfg) == 0) {
+			log_loc_cfg(&cfg);
+		} else {
+			LOG_ERR("configuracao do EKF invalida; filtro mantido");
+		}
+	}
+}
+
+/* Uma volta do laço da thread main: watchdog, configuração e resumo. */
+static void housekeeping(void)
+{
+	rtls_watchdog_feed();
+	apply_config_changes();
+	maybe_log_stats();
 }
 
 /* Uma rodada completa: DS-TWR, CSV, EKF e POSITION. */
@@ -204,7 +282,7 @@ static void free_loop(void)
 	while (true) {
 		next_ms += CYCLE_MS;
 		run_cycle();
-		maybe_log_stats();
+		housekeeping();
 		k_sleep(K_TIMEOUT_ABS_MS(next_ms));
 	}
 }
@@ -250,7 +328,7 @@ static bool wait_beacon(int64_t until_us)
 		}
 		/* POLL e FINAL de outras tags também chegam (broadcast): ignora. */
 		if (len <= 0 ||
-		    rtls_frame_parse(frame, (size_t)len, CONFIG_RTLS_PAN_ID, &hdr, &payload,
+		    rtls_frame_parse(frame, (size_t)len, pan_id, &hdr, &payload,
 				     &payload_len) != RTLS_MSG_BEACON ||
 		    hdr.src != RTLS_ADDR_GATEWAY) {
 			continue;
@@ -273,7 +351,7 @@ static bool wait_beacon(int64_t until_us)
  */
 static void tdma_loop(void)
 {
-	const int slot = rtls_tdma_slot_of(CONFIG_RTLS_NODE_ID);
+	const int slot = rtls_tdma_slot_of(node_id);
 	bool range_warned = false;
 
 	LOG_INF("TDMA: slot %d; procurando o BEACON do gateway", slot);
@@ -286,7 +364,7 @@ static void tdma_loop(void)
 				LOG_INF("TDMA: sincronizado no superquadro %u (%u slots de %u us)",
 					tdma.superframe, tdma.n_slots, tdma.slot_us);
 			}
-			maybe_log_stats();
+			housekeeping();
 			continue;
 		}
 
@@ -303,7 +381,7 @@ static void tdma_loop(void)
 			sleep_until_us(t_us);
 			run_cycle();
 		}
-		maybe_log_stats();
+		housekeeping();
 
 		/* Próximo BEACON: a janela de RX abre um pouco antes do previsto. */
 		t_us = rtls_tdma_next_beacon(&tdma);
@@ -320,26 +398,40 @@ static void tdma_loop(void)
 	}
 }
 
+static int radio_init(void)
+{
+	const struct dw1000_phy_config phy = DW1000_PHY_CONFIG_DEFAULT(pan_id, node_id);
+	int err;
+
+	err = dw1000_init();
+	if (err == 0) {
+		err = dw1000_configure(&phy);
+	}
+	if (err == 0) {
+		apply_antenna_delay();
+	}
+	return err;
+}
+
 int main(void)
 {
-	const struct dw1000_phy_config phy =
-		DW1000_PHY_CONFIG_DEFAULT(CONFIG_RTLS_PAN_ID, CONFIG_RTLS_NODE_ID);
-	struct rtls_twr_initiator_cfg twr_cfg = {
-		.pan_id = CONFIG_RTLS_PAN_ID,
-		.tag_id = CONFIG_RTLS_NODE_ID,
-		.n_anchors = CONFIG_RTLS_TAG_NUM_ANCHORS,
-	};
+	struct rtls_twr_initiator_cfg twr_cfg = {0};
 	struct rtls_loc_cfg loc_cfg;
 	int err;
 
+	/* Falha da NVS: segue com os padrões do Kconfig (já registrado no log). */
+	(void)rtls_config_init();
+	node_id = (uint16_t)rtls_config_get(RTLS_CFG_NODE_ID);
+	pan_id = (uint16_t)rtls_config_get(RTLS_CFG_PAN_ID);
+	anchor_base = (uint16_t)rtls_config_get(RTLS_CFG_TAG_ANCHOR_BASE);
+	n_anchors = (uint8_t)rtls_config_get(RTLS_CFG_TAG_NUM_ANCHORS);
+
 	if (IS_ENABLED(CONFIG_RTLS_TAG_TDMA)) {
 		LOG_INF("RTLS tag 0x%04x: TDMA (slot do BEACON), %d ancoras a partir de 0x%04x",
-			CONFIG_RTLS_NODE_ID, CONFIG_RTLS_TAG_NUM_ANCHORS,
-			CONFIG_RTLS_TAG_ANCHOR_BASE_ID);
+			node_id, n_anchors, anchor_base);
 	} else {
-		LOG_INF("RTLS tag 0x%04x: %d Hz, %d ancoras a partir de 0x%04x",
-			CONFIG_RTLS_NODE_ID, CONFIG_RTLS_TAG_UPDATE_RATE_HZ,
-			CONFIG_RTLS_TAG_NUM_ANCHORS, CONFIG_RTLS_TAG_ANCHOR_BASE_ID);
+		LOG_INF("RTLS tag 0x%04x: %d Hz, %d ancoras a partir de 0x%04x", node_id,
+			CONFIG_RTLS_TAG_UPDATE_RATE_HZ, n_anchors, anchor_base);
 	}
 
 	err = rtls_status_led_init();
@@ -347,23 +439,23 @@ int main(void)
 		LOG_WRN("LEDs indisponiveis (%d)", err);
 	}
 
-	err = dw1000_init();
-	if (err == 0) {
-		err = dw1000_configure(&phy);
-	}
+	err = radio_init();
 	if (err) {
 		LOG_ERR("DW1000 indisponivel (%d)", err);
 		rtls_status_led_error(true);
 		return 0;
 	}
 
-	for (int i = 0; i < CONFIG_RTLS_TAG_NUM_ANCHORS; i++) {
-		twr_cfg.anchors[i] = CONFIG_RTLS_TAG_ANCHOR_BASE_ID + i;
+	twr_cfg.pan_id = pan_id;
+	twr_cfg.tag_id = node_id;
+	twr_cfg.n_anchors = n_anchors;
+	for (int i = 0; i < n_anchors; i++) {
+		twr_cfg.anchors[i] = anchor_base + i;
 	}
 
 	err = rtls_twr_initiator_init(&twr_cfg);
 	if (err == 0) {
-		rtls_loc_default_cfg(&loc_cfg);
+		loc_cfg_from_registry(&loc_cfg);
 		err = rtls_loc_init(&loc, &loc_cfg);
 	}
 	if (err) {
@@ -374,9 +466,12 @@ int main(void)
 
 	timing_init();
 	timing_start();
-	LOG_INF("LOC %dD: sigma_r %d mm, sigma_a %d mm/s2, gating %d/100, z fixo (2D) %d mm",
-		loc_cfg.dim, CONFIG_RTLS_LOC_RANGE_STD_MM, CONFIG_RTLS_LOC_ACCEL_STD_MMS2,
-		CONFIG_RTLS_LOC_GATE_CHI2_X100, CONFIG_RTLS_LOC_TAG_HEIGHT_MM);
+	log_loc_cfg(&loc_cfg);
+
+	err = rtls_watchdog_init();
+	if (err) {
+		LOG_WRN("sem watchdog (%d)", err);
+	}
 
 	next_stats_ms = k_uptime_get() + CONFIG_RTLS_TAG_STATS_PERIOD_S * 1000;
 	if (IS_ENABLED(CONFIG_RTLS_TAG_TDMA)) {

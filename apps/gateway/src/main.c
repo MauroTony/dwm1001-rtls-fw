@@ -15,11 +15,13 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
+#include <rtls/config.h>
 #include <rtls/dw1000.h>
 #include <rtls/frames.h>
 #include <rtls/host_if.h>
 #include <rtls/status_led.h>
 #include <rtls/tdma.h>
+#include <rtls/watchdog.h>
 
 #include "tag_table.h"
 
@@ -38,6 +40,9 @@ BUILD_ASSERT(SNAPSHOT_RECORDS <= CONFIG_RTLS_HOST_IF_MAX_RECORDS,
 	(RTLS_TDMA_BEACON_SEG_US + CONFIG_RTLS_GATEWAY_TDMA_SLOTS * CONFIG_RTLS_GATEWAY_TDMA_SLOT_US)
 
 static uint8_t mac_seq;
+
+/* PAN do registro de parâmetros (M8); o ID do gateway é fixo (RTLS_ADDR_GATEWAY). */
+static uint16_t pan_id;
 
 /* BEACONs desde o último resumo (T7.1: período estável). */
 static struct {
@@ -64,8 +69,7 @@ static int send_beacon(uint16_t superframe)
 	uint8_t frame[RTLS_FRAME_MAX_LEN];
 	int len;
 
-	rtls_mac_hdr_init(&hdr, mac_seq++, CONFIG_RTLS_PAN_ID, RTLS_ADDR_BROADCAST,
-			  CONFIG_RTLS_NODE_ID);
+	rtls_mac_hdr_init(&hdr, mac_seq++, pan_id, RTLS_ADDR_BROADCAST, CONFIG_RTLS_NODE_ID);
 	len = rtls_frame_build(frame, sizeof(frame), &hdr, &msg, sizeof(msg));
 	if (len < 0) {
 		return len;
@@ -98,7 +102,7 @@ static void handle_frame(const uint8_t *frame, size_t len, const struct dw1000_r
 	size_t payload_len;
 	int err;
 
-	if (rtls_frame_parse(frame, len, CONFIG_RTLS_PAN_ID, &hdr, &payload, &payload_len) !=
+	if (rtls_frame_parse(frame, len, pan_id, &hdr, &payload, &payload_len) !=
 	    RTLS_MSG_POSITION) {
 		return;
 	}
@@ -182,10 +186,45 @@ static void publish_snapshot(void)
 	(void)rtls_host_if_publish(records, n);
 }
 
+static void apply_antenna_delay(void)
+{
+	const uint16_t tx = (uint16_t)rtls_config_get(RTLS_CFG_TX_ANT_DLY);
+	const uint16_t rx = (uint16_t)rtls_config_get(RTLS_CFG_RX_ANT_DLY);
+
+	if (dw1000_set_antenna_delay(tx, rx) == 0) {
+		LOG_INF("atrasos de antena: TX %u, RX %u", tx, rx);
+	}
+}
+
+/* Parâmetros de classe imediata alterados pelo shell; o PAN vale no próximo boot. */
+static void apply_config_changes(void)
+{
+	uint16_t key;
+
+	while ((key = rtls_config_next_change()) != 0) {
+		if (key == RTLS_CFG_TX_ANT_DLY || key == RTLS_CFG_RX_ANT_DLY) {
+			apply_antenna_delay();
+		}
+	}
+}
+
+static int radio_init(void)
+{
+	const struct dw1000_phy_config phy = DW1000_PHY_CONFIG_DEFAULT(pan_id, CONFIG_RTLS_NODE_ID);
+	int err;
+
+	err = dw1000_init();
+	if (err == 0) {
+		err = dw1000_configure(&phy);
+	}
+	if (err == 0) {
+		apply_antenna_delay();
+	}
+	return err;
+}
+
 int main(void)
 {
-	const struct dw1000_phy_config phy =
-		DW1000_PHY_CONFIG_DEFAULT(CONFIG_RTLS_PAN_ID, CONFIG_RTLS_NODE_ID);
 	/* Anunciado ao host em RTLS_INFO_GET; versão do arquivo VERSION do app. */
 	const struct rtls_host_if_info host_info = {
 		.fw_version = {APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_PATCHLEVEL},
@@ -200,8 +239,12 @@ int main(void)
 	uint16_t superframe = 0;
 	int err;
 
-	LOG_INF("RTLS gateway 0x%04x v%s: ate %d tags", CONFIG_RTLS_NODE_ID, APP_VERSION_STRING,
-		CONFIG_RTLS_GATEWAY_MAX_TAGS);
+	/* Falha da NVS: segue com os padrões do Kconfig (já registrado no log). */
+	(void)rtls_config_init();
+	pan_id = (uint16_t)rtls_config_get(RTLS_CFG_PAN_ID);
+
+	LOG_INF("RTLS gateway 0x%04x v%s: ate %d tags, PAN 0x%04x", CONFIG_RTLS_NODE_ID,
+		APP_VERSION_STRING, CONFIG_RTLS_GATEWAY_MAX_TAGS, pan_id);
 	if (CONFIG_RTLS_GATEWAY_SIM_TAGS > 0) {
 		LOG_WRN("modo de teste: %d tags simuladas no snapshot (0x%04x...)",
 			CONFIG_RTLS_GATEWAY_SIM_TAGS, SIM_TAG_BASE);
@@ -224,14 +267,16 @@ int main(void)
 		LOG_ERR("interface com o host indisponivel (%d)", err);
 	}
 
-	err = dw1000_init();
-	if (err == 0) {
-		err = dw1000_configure(&phy);
-	}
+	err = radio_init();
 	if (err) {
 		LOG_ERR("DW1000 indisponivel (%d)", err);
 		rtls_status_led_error(true);
 		return 0;
+	}
+
+	err = rtls_watchdog_init();
+	if (err) {
+		LOG_WRN("sem watchdog (%d)", err);
 	}
 
 	/* Agenda em µs: o BEACON precisa de uma grade estável de 100 ms. */
@@ -241,6 +286,10 @@ int main(void)
 	while (true) {
 		int64_t wake_us = next_publish_us;
 		int len;
+
+		/* O laço volta pelo menos a cada snapshot (100 ms). */
+		rtls_watchdog_feed();
+		apply_config_changes();
 
 		if (IS_ENABLED(CONFIG_RTLS_GATEWAY_BEACON)) {
 			wake_us = MIN(wake_us, next_beacon_us);

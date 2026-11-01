@@ -24,8 +24,17 @@ from pathlib import Path
 
 # A coluna raw_mm (antes da correção de viés por RSL) é opcional: firmwares
 # antigos não a imprimem.
-LINE_RE = re.compile(r"R,(\d+),(\d+),([0-9a-fA-F]{4}),(-?\d+),(-?\d+),(-?\d+)(?:,(-?\d+))?")
-FIELDS = ["round", "t_ms", "anchor", "dist_mm", "rx_power_cdbm", "fp_power_cdbm", "raw_mm"]
+# A coluna resp_fp_cdbm (1º caminho do RESP na tag, M8) também é opcional; com
+# ela, rx_power_cdbm - resp_fp_cdbm é o indicador de NLOS do mesmo quadro.
+LINE_RE = re.compile(
+    r"R,(\d+),(\d+),([0-9a-fA-F]{4}),(-?\d+),(-?\d+),(-?\d+)(?:,(-?\d+))?(?:,(-?\d+))?"
+)
+FIELDS = ["round", "t_ms", "anchor", "dist_mm", "rx_power_cdbm", "fp_power_cdbm", "raw_mm",
+          "resp_fp_cdbm"]
+# Indicador acima do qual a distância é suspeita de NLOS (dB): regra do DW1000.
+NLOS_SUSPECT_DB = 6.0
+# Sequências VT100 que o shell (M8) insere ao redesenhar o prompt.
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 # Posição do EKF: L,round,t_ms,x,y,z,sx,sy,sz,n_ranges,flags (mm).
 POS_RE = re.compile(
@@ -59,7 +68,7 @@ def parse_line(line):
     match = LINE_RE.search(line)
     if not match:
         return None
-    rnd, t_ms, anchor, dist, rx_pwr, fp_pwr, raw = match.groups()
+    rnd, t_ms, anchor, dist, rx_pwr, fp_pwr, raw, resp_fp = match.groups()
     return {
         "round": int(rnd),
         "t_ms": int(t_ms),
@@ -68,6 +77,7 @@ def parse_line(line):
         "rx_power_cdbm": int(rx_pwr),
         "fp_power_cdbm": int(fp_pwr),
         "raw_mm": int(raw) if raw is not None else None,
+        "resp_fp_cdbm": int(resp_fp) if resp_fp is not None else None,
     }
 
 
@@ -159,6 +169,7 @@ def cmd_capture(args):
                 line = port.readline().decode(errors="replace")
                 if args.echo and line:
                     print(line, end="")
+                line = ANSI_RE.sub("", line)
                 drop = DROPPED_RE.search(line)
                 if drop:
                     dropped += int(drop.group(1))
@@ -202,7 +213,8 @@ def cmd_stats(args):
     print(f"{rounds} rodadas com ao menos uma distância, {span_s:.1f} s, {rate:.2f} Hz")
     print(
         f"{'âncora':>7} {'n':>6} {'sucesso':>8} {'média mm':>9} {'bruta mm':>9} "
-        f"{'desvio':>7} {'mín':>6} {'máx':>6} {'RX dBm':>7} {'1º cam.':>7}"
+        f"{'desvio':>7} {'mín':>6} {'máx':>6} {'RX dBm':>7} {'1º cam.':>7} {'NLOS dB':>8} "
+        f"{'>6 dB':>6}"
     )
     for anchor, group in by_anchor(rows).items():
         dists = [r["dist_mm"] for r in group]
@@ -211,10 +223,18 @@ def cmd_stats(args):
         std = statistics.stdev(dists) if len(dists) > 1 else 0.0
         rx = statistics.fmean(r["rx_power_cdbm"] for r in group) / 100.0
         fp = statistics.fmean(r["fp_power_cdbm"] for r in group) / 100.0
+        # P_RX - P_FP do mesmo RESP, na tag (só com a coluna resp_fp_cdbm)
+        nlos = [(r["rx_power_cdbm"] - r["resp_fp_cdbm"]) / 100.0 for r in group
+                if r.get("resp_fp_cdbm") is not None]
+        if nlos:
+            suspect = 100.0 * sum(1 for v in nlos if v > NLOS_SUSPECT_DB) / len(nlos)
+            nlos_txt = f"{statistics.fmean(nlos):>8.1f} {suspect:>5.1f}%"
+        else:
+            nlos_txt = f"{'-':>8} {'-':>6}"
         print(
             f"{anchor:>7} {len(group):>6} {100.0 * len(group) / rounds:>7.1f}% "
             f"{statistics.fmean(dists):>9.1f} {raw_mean} {std:>7.1f} {min(dists):>6} {max(dists):>6} "
-            f"{rx:>7.1f} {fp:>7.1f}"
+            f"{rx:>7.1f} {fp:>7.1f} {nlos_txt}"
         )
         if args.true_distance is not None:
             ticks, mean_m = bias_ticks(group, args.true_distance)
