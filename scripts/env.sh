@@ -22,6 +22,17 @@ if [ -d /opt/SEGGER/JLink ]; then
 	esac
 fi
 
+# Zephyr SDK explícito: sem depender do registro de pacotes do CMake.
+if [ -z "${ZEPHYR_SDK_INSTALL_DIR:-}" ] && [ -f "$_rtls_ws/zephyr/SDK_VERSION" ]; then
+	_rtls_sdk="$HOME/zephyr-sdk-$(head -n1 "$_rtls_ws/zephyr/SDK_VERSION" | tr -d '[:space:]')"
+	if [ -f "$_rtls_sdk/cmake/Zephyr-sdkConfig.cmake" ]; then
+		export ZEPHYR_SDK_INSTALL_DIR="$_rtls_sdk"
+	else
+		echo "Zephyr SDK não encontrado em $_rtls_sdk. Rode antes: scripts/setup/setup-linux.sh" >&2
+	fi
+	unset _rtls_sdk
+fi
+
 cd "$_rtls_repo" || return 1
 echo "Ambiente RTLS ativo (workspace west: $_rtls_ws)"
 echo "  west build -b decawave_dwm1001_dev apps/tag -d build/tag"

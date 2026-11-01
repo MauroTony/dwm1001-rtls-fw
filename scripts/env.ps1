@@ -30,6 +30,19 @@ try {
 $RtlsSevenZip = Join-Path $env:ProgramFiles '7-Zip'
 if (Test-Path (Join-Path $RtlsSevenZip '7z.exe')) { $env:Path = "$env:Path;$RtlsSevenZip" }
 
+# Zephyr SDK explicito: sem depender do registro de pacotes do CMake, que
+# pode faltar (ex.: setup.cmd /c rodado em outro ambiente).
+$RtlsSdkVersionFile = Join-Path $RtlsWorkspace 'zephyr\SDK_VERSION'
+if (-not $env:ZEPHYR_SDK_INSTALL_DIR -and (Test-Path $RtlsSdkVersionFile)) {
+    $RtlsSdkVersion = (Get-Content $RtlsSdkVersionFile -TotalCount 1).Trim()
+    $RtlsSdk = Join-Path $HOME "zephyr-sdk-$RtlsSdkVersion"
+    if (Test-Path (Join-Path $RtlsSdk 'cmake\Zephyr-sdkConfig.cmake')) {
+        $env:ZEPHYR_SDK_INSTALL_DIR = $RtlsSdk
+    } else {
+        Write-Warning "Zephyr SDK $RtlsSdkVersion nao encontrado em $RtlsSdk. Rode antes: scripts\setup\setup-windows.ps1"
+    }
+}
+
 Set-Location $RtlsRepo
 Write-Host "Ambiente RTLS ativo (workspace west: $RtlsWorkspace)" -ForegroundColor Green
 Write-Host '  west build -b decawave_dwm1001_dev apps/tag -d build/tag'

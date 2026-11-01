@@ -121,7 +121,11 @@ Ou abra um shell já ativado:
 powershell -ExecutionPolicy Bypass -NoExit -File .\scripts\env.ps1
 ```
 
-O `env.ps1` ativa o venv e coloca o J-Link da SEGGER na frente do PATH.
+O `env.ps1` ativa o venv, coloca o J-Link da SEGGER na frente do PATH e
+define `ZEPHYR_SDK_INSTALL_DIR` (`~\zephyr-sdk-<versão de zephyr\SDK_VERSION>`).
+Com essa variável, o CMake encontra o SDK sem depender do registro de pacotes,
+que pode não existir no seu usuário. Ative o ambiente em **todo terminal
+novo** antes do `west build`.
 
 ### 2.4 WSL2 (opcional)
 
@@ -355,7 +359,7 @@ calibração de antena (`tools/rtls_log.py`) estão descritos em
 | `west: command not found` / `'west' não é reconhecido` | venv não ativado | `. .\scripts\env.ps1` ou `source scripts/env.sh` |
 | `west flash` usa o `jlink.exe` do Java ("Could not load J-Link library") | JDK antes do SEGGER no PATH e sem chave de registro | Ative o `env.ps1` ou use `west flash --commander "C:\Program Files\SEGGER\JLink_V986a\JLink.exe"` |
 | `west sdk install` falha ao extrair no Windows | 7-Zip fora do PATH | `$env:Path += ";$env:ProgramFiles\7-Zip"` |
-| `Could not find a package configuration file provided by "Zephyr-sdk"` | SDK não registrado no CMake | rode `setup.cmd /c` (Windows) ou `setup.sh -c` (Linux) dentro de `~/zephyr-sdk-1.0.1` |
+| `Could not find a package configuration file provided by "Zephyr-sdk"` | terminal sem o ambiente ativado e SDK fora do registro de pacotes do CMake | ative o ambiente (`. .\scripts\env.ps1` ou `source scripts/env.sh`, que definem `ZEPHYR_SDK_INSTALL_DIR`) e refaça com `-p always`. Alternativa permanente: `setup.cmd /c` (Windows) ou `setup.sh -c` (Linux) dentro de `~/zephyr-sdk-1.0.1` |
 | Erros de caminho longo no Windows | limite de 260 caracteres | workspace com caminho curto (ex.: `C:\ws`); `git config --global core.longpaths true` |
 | `Permission denied: /dev/ttyACM0` (Linux) | usuário fora do `dialout` | `sudo usermod -aG dialout $USER` e novo login |
 | A porta serial some ou fica ocupada no Linux | ModemManager capturando o ttyACM | `sudo systemctl disable --now ModemManager` |

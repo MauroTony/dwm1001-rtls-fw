@@ -313,6 +313,7 @@ Uma linha por teste executado:
 | `PermissionError` na porta | outro programa com a porta aberta | feche o miniterm/PuTTY |
 | Opção nova sem efeito | cache do CMake na pasta de build | `-p always` e confira o `.config` |
 | `Ignoring extra path from command line: ".conf"` e `File not found: .../nodes/a1` | PowerShell cortou o `-DEXTRA_CONF_FILE` no ponto | ponha a opção entre aspas ([§2.5](#25-compilar)) e refaça com `-p always` |
+| `Could not find a package configuration file provided by "Zephyr-sdk"` | terminal sem o ambiente ativado | `. .\scripts\env.ps1` (define `ZEPHYR_SDK_INSTALL_DIR`) e refaça com `-p always` ([06 §7](06-configuracao-ambiente.md#7-solução-de-problemas)) |
 | `Permission denied: /dev/ttyACM0` (Linux) | usuário fora do `dialout` | [06 §7](06-configuracao-ambiente.md#7-solução-de-problemas) |
 
 Sintomas do rádio (PER, `PLL nao travou`, `TX atrasado`) estão em

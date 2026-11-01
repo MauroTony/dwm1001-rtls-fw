@@ -416,7 +416,7 @@ flowchart LR
 | Arquivo | Para quê |
 |---------|----------|
 | `scripts/setup/setup-windows.ps1`, `setup-linux.sh` | instalam o ambiente completo (west, Zephyr, SDK) |
-| `scripts/env.ps1`, `env.sh` | ativam o venv e o J-Link num terminal novo |
+| `scripts/env.ps1`, `env.sh` | ativam o venv e o J-Link num terminal novo e definem `ZEPHYR_SDK_INSTALL_DIR` (o CMake acha o SDK sem o registro de pacotes) |
 | `scripts/list-boards.ps1`, `.sh` | porta serial × serial do J-Link de cada placa |
 
 ---
