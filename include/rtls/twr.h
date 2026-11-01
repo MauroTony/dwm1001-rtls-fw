@@ -21,11 +21,12 @@ extern "C" {
 /** Distância medida até uma âncora numa rodada. */
 struct rtls_range {
 	uint16_t anchor_id;
-	int32_t anchor_pos_mm[3]; /**< posição informada pela âncora no REPORT */
-	float distance_m;         /**< distância final (corrigida, se habilitado) */
-	float distance_raw_m;     /**< DS-TWR antes da correção de viés por RSL */
-	int16_t rx_power_cdbm;    /**< potência do RESP recebido na tag */
-	int16_t fp_power_cdbm;    /**< potência do 1º caminho do FINAL na âncora */
+	int32_t anchor_pos_mm[3];   /**< posição informada pela âncora no REPORT */
+	float distance_m;           /**< distância final (corrigida, se habilitado) */
+	float distance_raw_m;       /**< DS-TWR antes da correção de viés por RSL */
+	int16_t rx_power_cdbm;      /**< potência do RESP recebido na tag */
+	int16_t resp_fp_power_cdbm; /**< potência do 1º caminho do mesmo RESP, na tag */
+	int16_t fp_power_cdbm;      /**< potência do 1º caminho do FINAL na âncora */
 };
 
 /** Resultado de uma rodada: só as âncoras que completaram a troca. */
@@ -47,7 +48,16 @@ struct rtls_twr_responder_cfg {
 	uint16_t pan_id;
 	uint16_t anchor_id;
 	int32_t pos_mm[3];
+	/**
+	 * Chamado pela thread do responder depois de cada rodada e, sem POLL,
+	 * a cada RTLS_TWR_RESPONDER_IDLE_MS: watchdog e configuração (M8). Pode
+	 * ser NULL.
+	 */
+	void (*idle_hook)(void);
 };
+
+/** Período máximo entre chamadas do idle_hook do responder. */
+#define RTLS_TWR_RESPONDER_IDLE_MS 500
 
 /** Contadores por âncora, na ordem de rtls_twr_initiator_cfg.anchors. */
 struct rtls_twr_anchor_stats {
@@ -93,6 +103,9 @@ int rtls_twr_responder_init(const struct rtls_twr_responder_cfg *cfg);
 
 /** Laço do responder; só retorna em erro irrecuperável. */
 int rtls_twr_responder_run(void);
+
+/** Troca a posição enviada no REPORT. Chame da thread do responder (idle_hook). */
+void rtls_twr_responder_set_position(const int32_t pos_mm[3]);
 
 /** Copia os contadores do responder e, se @p reset, zera-os. */
 void rtls_twr_responder_get_stats(struct rtls_twr_responder_stats *stats, bool reset);

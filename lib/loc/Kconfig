@@ -38,6 +38,29 @@ config RTLS_LOC_GATE_CHI2_X100
 	help
 	  663 = 6,63: 99 % para 1 grau de liberdade.
 
+config RTLS_LOC_NLOS_WEIGHTING
+	bool "Pondera cada distância pelo indicador de NLOS (P_RX - P_FP)"
+	help
+	  Aumenta a variância de uma distância quando o primeiro caminho do
+	  RESP chega bem abaixo da potência total, sinal de multipercurso ou
+	  NLOS (docs/04-algoritmos.md, 5.8). Desligado por padrão para comparar
+	  com e sem no ensaio E8.
+
+config RTLS_LOC_NLOS_LOS_DB_X10
+	int "Indicador até o qual a distância vale como LOS (dB x 10)"
+	default 60
+
+config RTLS_LOC_NLOS_NLOS_DB_X10
+	int "Indicador a partir do qual vale o fator máximo (dB x 10)"
+	default 100
+
+config RTLS_LOC_NLOS_VAR_GAIN_X10
+	int "Fator máximo da variância (x 10)"
+	default 90
+	range 10 1000
+	help
+	  90 = variância x 9, ou seja, sigma x 3.
+
 module = RTLS_LOC
 module-str = rtls_loc
 source "subsys/logging/Kconfig.template.log_config"

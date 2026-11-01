@@ -41,6 +41,10 @@ void rtls_loc_default_cfg(struct rtls_loc_cfg *cfg)
 	cfg->range_std_m = CONFIG_RTLS_LOC_RANGE_STD_MM / 1000.0f;
 	cfg->accel_std_mps2 = CONFIG_RTLS_LOC_ACCEL_STD_MMS2 / 1000.0f;
 	cfg->gate_chi2 = CONFIG_RTLS_LOC_GATE_CHI2_X100 / 100.0f;
+	cfg->nlos_weighting = IS_ENABLED(CONFIG_RTLS_LOC_NLOS_WEIGHTING);
+	cfg->nlos_los_db = CONFIG_RTLS_LOC_NLOS_LOS_DB_X10 / 10.0f;
+	cfg->nlos_nlos_db = CONFIG_RTLS_LOC_NLOS_NLOS_DB_X10 / 10.0f;
+	cfg->nlos_var_gain = CONFIG_RTLS_LOC_NLOS_VAR_GAIN_X10 / 10.0f;
 }
 
 int rtls_loc_init(struct rtls_loc_ctx *ctx, const struct rtls_loc_cfg *cfg)
@@ -50,6 +54,10 @@ int rtls_loc_init(struct rtls_loc_ctx *ctx, const struct rtls_loc_cfg *cfg)
 	}
 	if ((cfg->dim != RTLS_LOC_2D && cfg->dim != RTLS_LOC_3D) || !(cfg->range_std_m > 0.0f) ||
 	    !(cfg->accel_std_mps2 > 0.0f) || !(cfg->gate_chi2 > 0.0f)) {
+		return -EINVAL;
+	}
+	if (cfg->nlos_weighting &&
+	    (!(cfg->nlos_nlos_db > cfg->nlos_los_db) || !(cfg->nlos_var_gain >= 1.0f))) {
 		return -EINVAL;
 	}
 
@@ -76,6 +84,27 @@ void rtls_loc_get_stats(struct rtls_loc_ctx *ctx, struct rtls_loc_stats *stats, 
 	if (reset) {
 		memset(&ctx->stats, 0, sizeof(ctx->stats));
 	}
+}
+
+float rtls_loc_nlos_var_factor(const struct rtls_loc_cfg *cfg, const struct rtls_range *r)
+{
+	float dp;
+
+	/* Sem as duas potências (CSV antigo, simulação), não há indicador. */
+	if (!cfg->nlos_weighting || (r->rx_power_cdbm == 0 && r->resp_fp_power_cdbm == 0)) {
+		return 1.0f;
+	}
+
+	dp = (float)(r->rx_power_cdbm - r->resp_fp_power_cdbm) / 100.0f;
+	if (dp <= cfg->nlos_los_db) {
+		return 1.0f;
+	}
+	if (dp >= cfg->nlos_nlos_db) {
+		return cfg->nlos_var_gain;
+	}
+
+	return 1.0f + (cfg->nlos_var_gain - 1.0f) * (dp - cfg->nlos_los_db) /
+			      (cfg->nlos_nlos_db - cfg->nlos_los_db);
 }
 
 static void anchor_m(const struct rtls_range *r, float a[3])
@@ -327,19 +356,25 @@ static void predict(struct rtls_loc_ctx *ctx, float dt)
 
 /*
  * Atualização por uma distância (escalar): nu = z - h(x), S = H P H^T + R,
- * gating nu^2/S <= gamma, K = P H^T / S e P na forma de Joseph.
+ * gating nu^2/S <= gamma, K = P H^T / S e P na forma de Joseph. Com a
+ * ponderação por NLOS, R = sigma_r^2 x fator do indicador.
  * Retorna true se a distância foi aceita.
  */
 static bool update_range(struct rtls_loc_ctx *ctx, const struct rtls_range *r)
 {
 	const int dim = ctx->cfg.dim;
 	const int n = ctx->n_states;
-	const float r2 = ctx->cfg.range_std_m * ctx->cfg.range_std_m;
+	const float vf = rtls_loc_nlos_var_factor(&ctx->cfg, r);
+	const float r2 = ctx->cfg.range_std_m * ctx->cfg.range_std_m * vf;
 	struct rtls_mat ikh, tmp;
 	float a[3], diff[3], h[3];
 	float ph[RTLS_LOC_MAX_STATES];
 	float k[RTLS_LOC_MAX_STATES];
 	float pred, nu, s;
+
+	if (vf > 1.0f) {
+		ctx->stats.nlos_weighted++;
+	}
 
 	anchor_m(r, a);
 	pred = range_diff(&ctx->cfg, ctx->x, a, diff);

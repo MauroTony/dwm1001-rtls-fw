@@ -30,14 +30,24 @@ struct rtls_loc_cfg {
 	float range_std_m;    /**< sigma_r */
 	float accel_std_mps2; /**< sigma_a */
 	float gate_chi2;      /**< limiar do teste nu^2/S */
+	/*
+	 * Ponderação por NLOS (M8): a variância da distância cresce com o
+	 * indicador P_RX - P_FP do RESP, de 1 (até nlos_los_db) até
+	 * nlos_var_gain (a partir de nlos_nlos_db), em rampa linear.
+	 */
+	bool nlos_weighting;
+	float nlos_los_db;
+	float nlos_nlos_db;
+	float nlos_var_gain;
 };
 
 /** Contadores do filtro, desde o último rtls_loc_get_stats(..., true). */
 struct rtls_loc_stats {
-	uint32_t updates;  /**< chamadas que publicaram posição */
-	uint32_t accepted; /**< distâncias usadas na atualização */
-	uint32_t rejected; /**< distâncias rejeitadas pelo gating */
-	uint32_t resets;   /**< reinicializações (tempo, rejeições seguidas, P inválida) */
+	uint32_t updates;       /**< chamadas que publicaram posição */
+	uint32_t accepted;      /**< distâncias usadas na atualização */
+	uint32_t rejected;      /**< distâncias rejeitadas pelo gating */
+	uint32_t resets;        /**< reinicializações (tempo, rejeições seguidas, P inválida) */
+	uint32_t nlos_weighted; /**< distâncias com variância aumentada por NLOS */
 };
 
 /** Estado do filtro (alocação estática pelo chamador). */
@@ -94,6 +104,13 @@ int rtls_loc_multilaterate(const struct rtls_loc_cfg *cfg, const struct rtls_ran
  */
 int rtls_loc_update(struct rtls_loc_ctx *ctx, const struct rtls_range_set *set,
 		    struct rtls_position *out);
+
+/**
+ * Fator da variância de uma distância pelo indicador de NLOS
+ * (P_RX - P_FP do RESP). 1 se a ponderação estiver desligada ou se a
+ * rodada não trouxer as potências.
+ */
+float rtls_loc_nlos_var_factor(const struct rtls_loc_cfg *cfg, const struct rtls_range *r);
 
 /** Copia os contadores do filtro e, se @p reset, zera-os. */
 void rtls_loc_get_stats(struct rtls_loc_ctx *ctx, struct rtls_loc_stats *stats, bool reset);

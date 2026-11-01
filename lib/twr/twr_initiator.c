@@ -27,6 +27,7 @@ struct resp_slot {
 	bool ok;
 	uint64_t rx_ts;
 	int16_t rx_power_cdbm;
+	int16_t fp_power_cdbm;
 };
 
 static struct rtls_twr_initiator_cfg initiator_cfg;
@@ -96,6 +97,7 @@ static int collect_responses(struct resp_slot resp[], uint8_t n)
 		resp[idx].ok = true;
 		resp[idx].rx_ts = info.rx_ts;
 		resp[idx].rx_power_cdbm = info.rx_power_cdbm;
+		resp[idx].fp_power_cdbm = info.fp_power_cdbm;
 		initiator_stats.anchors[idx].resp_ok++;
 		received++;
 	}
@@ -143,6 +145,7 @@ static void collect_reports(struct resp_slot resp[], uint8_t n, int expected, ui
 		range->distance_raw_m = distance;
 		range->distance_m = correct_bias(distance);
 		range->rx_power_cdbm = resp[idx].rx_power_cdbm;
+		range->resp_fp_power_cdbm = resp[idx].fp_power_cdbm;
 		range->fp_power_cdbm = msg.fp_power_cdbm;
 		for (int k = 0; k < 3; k++) {
 			range->anchor_pos_mm[k] = msg.pos_mm[k];

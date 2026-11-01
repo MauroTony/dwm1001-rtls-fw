@@ -104,17 +104,31 @@ static void respond(uint16_t tag_id, uint8_t round, uint8_t slot, uint8_t n_anch
 	}
 }
 
+void rtls_twr_responder_set_position(const int32_t pos_mm[3])
+{
+	for (int k = 0; k < 3; k++) {
+		responder_cfg.pos_mm[k] = pos_mm[k];
+	}
+}
+
 int rtls_twr_responder_run(void)
 {
-	const k_timepoint_t forever = sys_timepoint_calc(K_FOREVER);
 	struct rtls_msg_poll poll;
 	struct dw1000_rx_info info;
 	struct rtls_mac_hdr hdr;
 	int slot;
 
 	while (true) {
-		if (twr_recv(responder_cfg.pan_id, RTLS_MSG_POLL, forever, &hdr, &poll, sizeof(poll),
-			     &info) != 0) {
+		/* Sem POLL, volta a cada RTLS_TWR_RESPONDER_IDLE_MS para o idle_hook. */
+		const k_timepoint_t deadline =
+			sys_timepoint_calc(K_MSEC(RTLS_TWR_RESPONDER_IDLE_MS));
+
+		if (responder_cfg.idle_hook != NULL) {
+			responder_cfg.idle_hook();
+		}
+
+		if (twr_recv(responder_cfg.pan_id, RTLS_MSG_POLL, deadline, &hdr, &poll,
+			     sizeof(poll), &info) != 0) {
 			continue;
 		}
 
