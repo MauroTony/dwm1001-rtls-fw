@@ -9,4 +9,5 @@ target_sources(app PRIVATE
   src/test_loc.c
   src/test_host_if.c
   src/test_tdma.c
+  src/test_config.c
 )

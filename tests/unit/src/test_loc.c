@@ -99,6 +99,7 @@ static void make_set(struct rtls_range_set *set, const int32_t anchors[4][3], co
 		}
 		r->distance_raw_m = r->distance_m;
 		r->rx_power_cdbm = (int16_t)(-6300 - (int)(200.0f * sqrtf(d2)));
+		r->resp_fp_power_cdbm = r->rx_power_cdbm; /* indicador de NLOS = 0 dB */
 		r->fp_power_cdbm = r->rx_power_cdbm;
 	}
 }
@@ -520,6 +521,96 @@ ZTEST(loc, test_ekf_reinit_after_jump)
 	zassert_true(init_round > 30 && init_round <= 37, "reiniciou na rodada %d", init_round);
 	zassert_true(err_2d(&pos, truth) < 0.10f, "erro final %f m",
 		     (double)err_2d(&pos, truth));
+}
+
+/* ------------------------------------------------------- NLOS (M8) */
+
+static struct rtls_loc_cfg cfg_nlos(bool weighting)
+{
+	struct rtls_loc_cfg cfg = cfg_2d(0.05f);
+
+	cfg.nlos_weighting = weighting;
+	cfg.nlos_los_db = 6.0f;
+	cfg.nlos_nlos_db = 10.0f;
+	cfg.nlos_var_gain = 9.0f;
+	return cfg;
+}
+
+/* T8.6: rampa do fator da variância pelo indicador P_RX - P_FP */
+ZTEST(loc, test_nlos_var_factor)
+{
+	struct rtls_loc_cfg cfg = cfg_nlos(true);
+	struct rtls_range r = {.rx_power_cdbm = -7900};
+
+	r.resp_fp_power_cdbm = -7900 - 300; /* 3 dB: LOS */
+	zassert_within(rtls_loc_nlos_var_factor(&cfg, &r), 1.0f, 1e-6f);
+	r.resp_fp_power_cdbm = -7900 - 800; /* 8 dB: meio da rampa */
+	zassert_within(rtls_loc_nlos_var_factor(&cfg, &r), 5.0f, 1e-4f);
+	r.resp_fp_power_cdbm = -7900 - 1200; /* 12 dB: NLOS */
+	zassert_within(rtls_loc_nlos_var_factor(&cfg, &r), 9.0f, 1e-6f);
+
+	/* sem as potências, ou com a ponderação desligada: fator 1 */
+	cfg.nlos_weighting = false;
+	zassert_within(rtls_loc_nlos_var_factor(&cfg, &r), 1.0f, 1e-6f);
+	cfg.nlos_weighting = true;
+	r.rx_power_cdbm = 0;
+	r.resp_fp_power_cdbm = 0;
+	zassert_within(rtls_loc_nlos_var_factor(&cfg, &r), 1.0f, 1e-6f);
+
+	/* limiares invertidos são configuração inválida */
+	cfg.nlos_nlos_db = 5.0f;
+	zassert_equal(rtls_loc_init(&ctx, &cfg), -EINVAL);
+}
+
+/*
+ * RMSE com +12 cm de viés numa âncora sinalizada (indicador 12 dB), abaixo
+ * do que o gating rejeita: só a ponderação reduz o peso dela.
+ */
+static float run_nlos_bias(bool weighting, struct rtls_loc_stats *st)
+{
+	const struct rtls_loc_cfg cfg = cfg_nlos(weighting);
+	const float truth[3] = {3.0f, 2.0f, TAG_Z_M};
+	float sum = 0.0f;
+	int n = 0;
+
+	rng_seed(8);
+	zassert_ok(rtls_loc_init(&ctx, &cfg));
+	for (int k = 0; k < 300; k++) {
+		struct rtls_range_set set;
+		struct rtls_position pos;
+		float e;
+
+		make_set(&set, anchors_2d, truth, (int64_t)k * CYCLE_MS, 0xF, 0.05f, -1);
+		for (int i = 0; i < set.count; i++) {
+			set.ranges[i].resp_fp_power_cdbm = set.ranges[i].rx_power_cdbm - 200;
+		}
+		set.ranges[2].distance_m += 0.12f;
+		set.ranges[2].resp_fp_power_cdbm = set.ranges[2].rx_power_cdbm - 1200;
+
+		zassert_ok(rtls_loc_update(&ctx, &set, &pos));
+		e = err_2d(&pos, truth);
+		if (k >= 20) {
+			sum += e * e;
+			n++;
+		}
+	}
+
+	rtls_loc_get_stats(&ctx, st, false);
+	return sqrtf(sum / n);
+}
+
+/* T8.6 */
+ZTEST(loc, test_nlos_weighting_reduces_bias)
+{
+	struct rtls_loc_stats st_off, st_on;
+	const float off = run_nlos_bias(false, &st_off);
+	const float on = run_nlos_bias(true, &st_on);
+
+	zassert_equal(st_off.nlos_weighted, 0);
+	zassert_true(st_on.nlos_weighted >= 290, "ponderadas: %u", st_on.nlos_weighted);
+	zassert_true(on < 0.8f * off, "RMSE %f com, %f sem", (double)on, (double)off);
+	TC_PRINT("T8.6 vies NLOS de 12 cm numa ancora: RMSE %.1f mm sem, %.1f mm com ponderacao\n",
+		 (double)(off * 1000.0f), (double)(on * 1000.0f));
 }
 
 ZTEST_SUITE(loc, NULL, NULL, NULL, NULL, NULL);
