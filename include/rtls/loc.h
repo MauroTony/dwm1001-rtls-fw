@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <rtls/loc_mat.h>
 #include <rtls/twr.h>
 
 #ifdef __cplusplus
@@ -31,15 +32,25 @@ struct rtls_loc_cfg {
 	float gate_chi2;      /**< limiar do teste nu^2/S */
 };
 
+/** Contadores do filtro, desde o último rtls_loc_get_stats(..., true). */
+struct rtls_loc_stats {
+	uint32_t updates;  /**< chamadas que publicaram posição */
+	uint32_t accepted; /**< distâncias usadas na atualização */
+	uint32_t rejected; /**< distâncias rejeitadas pelo gating */
+	uint32_t resets;   /**< reinicializações (tempo, rejeições seguidas, P inválida) */
+};
+
 /** Estado do filtro (alocação estática pelo chamador). */
 struct rtls_loc_ctx {
 	struct rtls_loc_cfg cfg;
 	bool initialized;
-	uint8_t n_states;   /**< 4 (2D) ou 6 (3D) */
-	int64_t last_t_ms;
-	uint32_t reject_streak;
-	float x[RTLS_LOC_MAX_STATES];                      /**< [p; v] */
-	float P[RTLS_LOC_MAX_STATES][RTLS_LOC_MAX_STATES]; /**< covariância */
+	uint8_t n_states;               /**< 4 (2D) ou 6 (3D) */
+	int64_t last_t_ms;              /**< instante do estado x */
+	int64_t last_accept_ms;         /**< última distância aceita */
+	uint32_t reject_streak;         /**< rodadas seguidas com tudo rejeitado */
+	float x[RTLS_LOC_MAX_STATES];   /**< [p; v] */
+	struct rtls_mat P;              /**< covariância, n_states x n_states */
+	struct rtls_loc_stats stats;
 };
 
 /** Estimativa publicada a cada ciclo. */
@@ -63,19 +74,29 @@ void rtls_loc_reset(struct rtls_loc_ctx *ctx);
 /**
  * Multilateração LS + refinamento Gauss-Newton.
  *
+ * No modo 2D, z = cfg->tag_height_m e pos_m[2] recebe esse valor.
+ *
+ * @param gdop se não for NULL, recebe sqrt(tr((J^T J)^-1)) na solução
+ *             (em 2D, só x e y)
  * @retval -EINVAL distâncias insuficientes (2D: < 3; 3D: < 4) ou geometria degenerada
  */
 int rtls_loc_multilaterate(const struct rtls_loc_cfg *cfg, const struct rtls_range_set *set,
-			   float pos_m[3]);
+			   float pos_m[3], float *gdop);
 
 /**
  * Um ciclo do EKF: predição com o dt real + atualização por distância.
+ * Reinicializa sozinho (docs/04-algoritmos.md, seção 5.4); a posição que sai
+ * da multilateração leva RTLS_POS_FLAG_INIT.
  *
  * @retval 0 @p out preenchido
  * @retval -EAGAIN filtro ainda não inicializado e medidas insuficientes
+ * @retval -EINVAL ponteiro nulo
  */
 int rtls_loc_update(struct rtls_loc_ctx *ctx, const struct rtls_range_set *set,
 		    struct rtls_position *out);
+
+/** Copia os contadores do filtro e, se @p reset, zera-os. */
+void rtls_loc_get_stats(struct rtls_loc_ctx *ctx, struct rtls_loc_stats *stats, bool reset);
 
 #ifdef __cplusplus
 }
