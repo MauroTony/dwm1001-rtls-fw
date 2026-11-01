@@ -38,6 +38,16 @@ config RTLS_GATEWAY_STATS_PERIOD_S
 	int "Período do resumo de recepção por tag (s; 0 desliga)"
 	default 10
 
+config RTLS_GATEWAY_SIM_TAGS
+	int "Tags simuladas no snapshot para o host (teste do M6)"
+	default 0
+	range 0 32
+	help
+	  Acrescenta N registros sintéticos (IDs 0x1F00 + i, posição andando
+	  em x e round avançando a cada snapshot) aos das tags reais. Serve
+	  para testar a paginação e o CRC do SPI com mais de 9 tags (T6.3,
+	  T6.4) sem montar a bancada. Deixe 0 em uso normal.
+
 endmenu
 
 source "Kconfig.zephyr"

@@ -1,12 +1,42 @@
+config RTLS_HOST_IF_CODEC
+	bool "Codec do protocolo SPI com o host (puro)"
+	select CRC
+	help
+	  Monta as respostas do protocolo (envelope, INFO, páginas da tabela
+	  com CRC-16/CCITT-FALSE) sem acesso ao SPI. Usado pelo transporte e
+	  pelos testes em native_sim.
+
 menuconfig RTLS_HOST_IF
 	bool "Interface SPI escravo com o host (gateway)"
 	depends on SPI_SLAVE
+	select RTLS_HOST_IF_CODEC
 	help
 	  Entrega a tabela de tags a um host externo via SPIS + DRDY
 	  (docs/05-interface-spi-gateway.md). Requer no devicetree o chosen
 	  "rtls,host-spi" (nó nordic,nrf-spis) e zephyr,user/drdy-gpios.
 
 if RTLS_HOST_IF
+
+config RTLS_HOST_IF_MAX_RECORDS
+	int "Registros no snapshot publicado para o host"
+	default 64
+	range 1 255
+	help
+	  Tamanho da cópia interna do snapshot (26 B por registro). Precisa
+	  cobrir a tabela do gateway mais as tags simuladas.
+
+config RTLS_HOST_IF_STACK_SIZE
+	int "Pilha da thread host_if (bytes)"
+	default 1024
+
+config RTLS_HOST_IF_THREAD_PRIORITY
+	int "Prioridade da thread host_if"
+	default -1
+	help
+	  Negativa = cooperativa, acima da main (prioridade 0). Assim o SPIS é
+	  rearmado logo depois de cada transação, mesmo com a main ocupada no
+	  printk do CSV. A thread só faz cópia e CRC de até 245 B por
+	  transação e volta a bloquear no spi_transceive().
 
 module = RTLS_HOST_IF
 module-str = rtls_host_if

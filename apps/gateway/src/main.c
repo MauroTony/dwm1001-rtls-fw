@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <string.h>
 
+#include <zephyr/app_version.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
@@ -22,6 +23,14 @@
 #include "tag_table.h"
 
 LOG_MODULE_REGISTER(gateway, LOG_LEVEL_INF);
+
+#define SNAPSHOT_RECORDS (CONFIG_RTLS_GATEWAY_MAX_TAGS + CONFIG_RTLS_GATEWAY_SIM_TAGS)
+
+BUILD_ASSERT(SNAPSHOT_RECORDS <= CONFIG_RTLS_HOST_IF_MAX_RECORDS,
+	     "aumente CONFIG_RTLS_HOST_IF_MAX_RECORDS");
+
+/* Primeiro ID das tags simuladas (CONFIG_RTLS_GATEWAY_SIM_TAGS). */
+#define SIM_TAG_BASE 0x1F00
 
 /* Uma linha CSV por POSITION recebido (lida por tools/rtls_log.py). */
 static void print_position(uint16_t tag_id, const struct rtls_msg_position *msg,
@@ -89,11 +98,38 @@ static void log_stats(void)
 	}
 }
 
+/*
+ * Registros sintéticos para testar a paginação do SPI (T6.3/T6.4): cada tag
+ * anda 10 mm em x por snapshot, numa faixa de 6 m, e o round avança.
+ */
+static size_t add_sim_tags(struct rtls_tag_record *out)
+{
+	static uint8_t sim_round;
+
+	sim_round++;
+	for (int i = 0; i < CONFIG_RTLS_GATEWAY_SIM_TAGS; i++) {
+		out[i] = (struct rtls_tag_record){
+			.tag_id = SIM_TAG_BASE + i,
+			.round = sim_round,
+			.n_ranges = 4,
+			.flags = RTLS_POS_FLAG_VALID,
+			.rssi_dbm = -80,
+			.pos_mm = {1000 + (sim_round * 10 + i * 500) % 6000, 500 * i, 1000},
+			.std_mm = {50, 50, 0},
+		};
+	}
+
+	return CONFIG_RTLS_GATEWAY_SIM_TAGS;
+}
+
 static void publish_snapshot(void)
 {
-	static struct rtls_tag_record records[CONFIG_RTLS_GATEWAY_MAX_TAGS];
-	const size_t n = tag_table_snapshot(records, ARRAY_SIZE(records), k_uptime_get());
+	static struct rtls_tag_record records[SNAPSHOT_RECORDS];
+	size_t n = tag_table_snapshot(records, CONFIG_RTLS_GATEWAY_MAX_TAGS, k_uptime_get());
 
+	if (CONFIG_RTLS_GATEWAY_SIM_TAGS > 0) {
+		n += add_sim_tags(&records[n]);
+	}
 	(void)rtls_host_if_publish(records, n);
 }
 
@@ -101,13 +137,24 @@ int main(void)
 {
 	const struct dw1000_phy_config phy =
 		DW1000_PHY_CONFIG_DEFAULT(CONFIG_RTLS_PAN_ID, CONFIG_RTLS_NODE_ID);
+	/* Anunciado ao host em RTLS_INFO_GET; versão do arquivo VERSION do app. */
+	const struct rtls_host_if_info host_info = {
+		.fw_version = {APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_PATCHLEVEL},
+		.gateway_id = CONFIG_RTLS_NODE_ID,
+		.capacity = CONFIG_RTLS_GATEWAY_MAX_TAGS,
+		.superframe_ms = CONFIG_RTLS_GATEWAY_PUBLISH_MS,
+	};
 	uint8_t frame[RTLS_FRAME_MAX_LEN];
 	struct dw1000_rx_info info;
 	int64_t next_publish_ms, next_stats_ms;
 	int err;
 
-	LOG_INF("RTLS gateway 0x%04x: ate %d tags", CONFIG_RTLS_NODE_ID,
+	LOG_INF("RTLS gateway 0x%04x v%s: ate %d tags", CONFIG_RTLS_NODE_ID, APP_VERSION_STRING,
 		CONFIG_RTLS_GATEWAY_MAX_TAGS);
+	if (CONFIG_RTLS_GATEWAY_SIM_TAGS > 0) {
+		LOG_WRN("modo de teste: %d tags simuladas no snapshot (0x%04x...)",
+			CONFIG_RTLS_GATEWAY_SIM_TAGS, SIM_TAG_BASE);
+	}
 
 	err = rtls_status_led_init();
 	if (err) {
@@ -116,7 +163,7 @@ int main(void)
 
 	tag_table_init();
 
-	err = rtls_host_if_init();
+	err = rtls_host_if_init(&host_info);
 	if (err) {
 		/* Segue sem host: as posições continuam no log. */
 		LOG_ERR("interface com o host indisponivel (%d)", err);
