@@ -7,4 +7,5 @@ target_sources(app PRIVATE
   src/test_twr_math.c
   src/test_frames.c
   src/test_loc.c
+  src/test_host_if.c
 )
