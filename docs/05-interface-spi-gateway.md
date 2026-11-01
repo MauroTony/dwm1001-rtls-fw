@@ -134,11 +134,39 @@ ao detectar borda de subida no DRDY:
 - O nó `spi1` do devicetree vira `nordic,nrf-spis` em
   [`apps/gateway/boards/decawave_dwm1001_dev.overlay`](../apps/gateway/boards/decawave_dwm1001_dev.overlay).
   O DRDY fica em `zephyr,user/drdy-gpios`.
-- A thread `host_if` faz um laço de `spi_transceive()` em modo escravo, que
-  bloqueia até o CS subir. Cada chamada corresponde a uma transação e à
-  próxima etapa da máquina de estados (IDLE → REQ → META → DATA → IDLE).
-- O snapshot vem de `rtls_host_if_publish()` com cópia sob mutex. O host
-  sempre lê um estado coerente.
+- Duas camadas em [`lib/host_if/`](../lib/host_if):
+  - **codec** (`host_if_codec.c`, puro): `rtls_host_if_handle()` lê o
+    request e monta envelope, INFO e páginas com CRC. Testado no T6.0;
+  - **transporte** (`host_if.c`): thread `host_if`, SPIS, DRDY e snapshot.
+- A thread faz um laço de `spi_transceive()` em modo escravo, que bloqueia
+  até o CS subir. Cada chamada é uma transação e avança a máquina de estados:
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> IDLE: NOP 0xFF ou transação vazia
+    IDLE --> META: request (resposta já montada)
+    META --> DATA: qualquer transação (host lê [SIZE][NUM])
+    DATA --> IDLE: qualquer transação (host lê a resposta)
+```
+
+| Ponto | Como foi feito |
+|-------|----------------|
+| Request | o TLV vem no início da transação; o resto é ignorado (o host ESP32 preenche com `0xFF` até 16 B) |
+| `NUM` | sempre 1: toda resposta cabe numa transação (≤ 245 B) |
+| MISO no IDLE | o SPIS está armado só para receber e devolve o ORC `0xFF`; entre transações (sem buffers), o `def-char` `0x00` |
+| Recuperação | 3 × 1 B `0xFF`: META e DATA consomem uma transação cada, e no IDLE o NOP não tem resposta |
+| Snapshot | `rtls_host_if_publish()` copia a tabela sob mutex a cada 100 ms; a sequência só avança se algo além do `age_ms` mudou |
+| DRDY | sobe com sequência nova; desce quando o host lê **inteira** a última página dessa sequência |
+| Prioridade | thread cooperativa (−1), acima da `main`: rearma o SPIS logo depois de cada transação, mesmo com a `main` ocupada no `printk` do CSV |
+| Versão do firmware | arquivo [`apps/gateway/VERSION`](../apps/gateway/VERSION) (hoje 0.6.0), lido de `<zephyr/app_version.h>` |
+| Teste sem bancada | `CONFIG_RTLS_GATEWAY_SIM_TAGS=N` acrescenta N tags sintéticas (`0x1F00 + i`) ao snapshot, para testar a paginação (T6.3) |
+
+> [!NOTE]
+> Entre a transação de META e a de DATA o gateway precisa rearmar o SPIS.
+> Um host rápido deve respeitar os ≥ 50 µs da §1; se ler cedo demais, recebe
+> `0x00` no lugar do envelope e deve repetir o comando. O host ESP32 já
+> espera 30 ms entre transações.
 
 ## 7. Extensões planejadas (M12, opcional)
 

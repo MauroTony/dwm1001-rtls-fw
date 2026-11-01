@@ -165,7 +165,7 @@ Laço *responder*, sempre em RX:
 | `main` | tag | preemptiva 0 | ciclo de 10 Hz: TWR → EKF → POSITION |
 | `main` | anchor | preemptiva 0 | laço do responder |
 | `main` | gateway | preemptiva 0 | RX de POSITION → tabela |
-| `host_if` (M6) | gateway | preemptiva 5 | transações SPIS, DRDY |
+| `host_if` (M6) | gateway | cooperativa −1 | transações SPIS, DRDY; rearma o SPIS logo após cada transação |
 | `logging` | todos | baixa | processamento de log diferido |
 | timer `heartbeat` | todos | ISR | pisca o LED verde (500 ms) |
 | workqueue do sistema | anchor | cooperativa | resumo das estatísticas do TWR a cada 10 s |
