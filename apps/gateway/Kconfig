@@ -23,6 +23,21 @@ config RTLS_GATEWAY_PUBLISH_MS
 	int "Período de publicação do snapshot para o host (ms)"
 	default 100
 
+config RTLS_GATEWAY_CSV_OUTPUT
+	bool "Imprime cada POSITION recebido em CSV na UART"
+	default y
+	help
+	  Uma linha por POSITION: P,<tag>,<round>,<t_ms>,<x_mm>,<y_mm>,<z_mm>,
+	  <sx_mm>,<sy_mm>,<sz_mm>,<n_ranges>,<flags>,<rx_cdbm>,<fp_cdbm>,<gw_ms>,
+	  onde t_ms é o uptime da tag no POLL da rodada e gw_ms o uptime do
+	  gateway na recepção. Lida por tools/rtls_log.py. O printk é síncrono
+	  (~6 ms por linha a 115200 bps) e o rádio não escuta enquanto imprime:
+	  desligue com muitas tags.
+
+config RTLS_GATEWAY_STATS_PERIOD_S
+	int "Período do resumo de recepção por tag (s; 0 desliga)"
+	default 10
+
 endmenu
 
 source "Kconfig.zephyr"

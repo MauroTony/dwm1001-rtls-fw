@@ -67,3 +67,23 @@ int rtls_frame_parse(const uint8_t *frame, size_t len, uint16_t pan_id,
 
 	return (*payload)[0];
 }
+
+int rtls_round_tracker_update(struct rtls_round_tracker *trk, uint8_t round, uint32_t t_ms)
+{
+	int lost = 0;
+
+	if (trk->valid) {
+		if (t_ms == trk->last_t_ms) {
+			return -EALREADY;
+		}
+		/* t_ms voltou: a tag reiniciou e a sequência recomeça */
+		if (t_ms > trk->last_t_ms) {
+			lost = (uint8_t)(round - trk->last_round - 1U);
+		}
+	}
+
+	trk->valid = true;
+	trk->last_round = round;
+	trk->last_t_ms = t_ms;
+	return lost;
+}

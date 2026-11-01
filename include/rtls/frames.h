@@ -9,6 +9,7 @@
 #ifndef RTLS_FRAMES_H_
 #define RTLS_FRAMES_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -133,6 +134,30 @@ static inline void rtls_mac_hdr_init(struct rtls_mac_hdr *hdr, uint8_t seq, uint
 	hdr->dst = dst;
 	hdr->src = src;
 }
+
+/**
+ * Acompanha a sequência de `round` dos POSITION de uma tag para contar
+ * lacunas. Zere a estrutura para começar (ou recomeçar) a sequência.
+ */
+struct rtls_round_tracker {
+	bool valid;
+	uint8_t last_round;
+	uint32_t last_t_ms;
+};
+
+/**
+ * Registra um POSITION com @p round e @p t_ms (uptime da tag).
+ *
+ * O `round` dá a volta em 256 rodadas (25,6 s a 10 Hz): o chamador deve
+ * zerar o tracker depois de um silêncio longo (o gateway faz isso ao expirar
+ * a tag). Um @p t_ms menor que o anterior indica que a tag reiniciou: a
+ * sequência recomeça sem contar perdas.
+ *
+ * @return rodadas sem POSITION desde o anterior (0 se consecutivo ou se a
+ *         sequência recomeçou)
+ * @retval -EALREADY quadro repetido (mesmo @p t_ms)
+ */
+int rtls_round_tracker_update(struct rtls_round_tracker *trk, uint8_t round, uint32_t t_ms);
 
 /** Tamanho do payload da mensagem @p type, ou 0 se o tipo for desconhecido. */
 size_t rtls_msg_size(uint8_t type);
