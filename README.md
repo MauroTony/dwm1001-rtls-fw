@@ -22,7 +22,8 @@ a placa **Qorvo/Decawave DWM1001-DEV** (nRF52832 + DW1000), sobre o
 | M1: driver DW1000 próprio | implementado; validar em bancada com `samples/uwb_pingpong` |
 | M2: DS-TWR 1×1 + calibração | implementado, com correção de viés por RSL (APS011); validar e calibrar com `tools/rtls_log.py` |
 | M3: DS-TWR 1×4 a 10 Hz | implementado; validar em bancada |
-| M4 a M8 | pendentes (o EKF, núcleo do TCC, é o M4) |
+| M4: localização (multilateração + EKF) | implementado; testes em simulação aprovados na placa; validar em bancada (grade de pontos, tempo ≤ 1 ms) |
+| M5 a M8 | pendentes (a tag já envia o POSITION; falta o CSV do gateway no M5) |
 | M9 e M10 (opcionais) | se houver tempo: descoberta e seleção de âncoras; até 8 âncoras por rodada com detecção de NLOS por redundância |
 | M11 e M12 (opcionais) | se houver tempo: modo SS-TWR escolhido por *flag*, com compensação do desvio de relógio; configuração remota de tags e âncoras pelo host, via gateway |
 

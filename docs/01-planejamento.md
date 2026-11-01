@@ -167,7 +167,8 @@ existir, o modo SS/DS vira mais um parâmetro remoto.
 |-------|----------|
 | M0 | concluído |
 | M1, M2, M3 | implementados e compilando; falta a validação em hardware ([07-bancada.md](07-bancada.md)) |
-| M4 a M8 | pendentes |
+| M4 | M4a concluído (T4.1–T4.7 e T4.12–T4.14 aprovados na placa); M4b integrado na tag, falta a bancada (T4.9–T4.11) |
+| M5 a M8 | pendentes (a tag já envia o POSITION) |
 | M9 a M12 | opcionais, no fim do projeto se houver tempo |
 
 ### M0 — Ambiente e estrutura base · ~1 semana

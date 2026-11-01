@@ -37,11 +37,11 @@ flowchart LR
 
 | Etapa | Situação | Testes automatizados | Bancada | Placas |
 |-------|----------|----------------------|---------|--------|
-| M0 Ambiente e estrutura | ✅ (falta T0.4 na placa) | build + unitários | smoke test | 1 |
+| M0 Ambiente e estrutura | ✅ (falta T0.4 na placa) | build + unitários (T0.3b na placa) | smoke test | 1 |
 | M1 Driver DW1000 | 🧪 | build | ping-pong | 2 |
 | M2 DS-TWR 1×1 + calibração | 🧪 | `twr_math`, `frames` | ranging + calibração | 2–3 |
 | M3 DS-TWR 1×4 a 10 Hz | 🧪 | — | 4 âncoras + tag | 5 |
-| M4 Localização (EKF) | 📐 | simulação em `native_sim` | grade de pontos | 5 |
+| M4 Localização (EKF) | 🧪 (M4a ✅) | `loc`, `loc_mat` (T4.1–T4.7, T4.12–T4.14) | grade de pontos | 5 |
 | M5 Tag → gateway | 📐 | — | entrega das posições | 6 |
 | M6 SPI → host | 📐 | codec TLV, CRC | host lendo a tabela | 6 + host |
 | M7 Multi-tag (TDMA) | 📐 | — | 4 tags simultâneas | 9 |
@@ -246,7 +246,7 @@ python -m serial.tools.miniterm /dev/ttyACM0 115200    # Linux
 
 | Nó | Linha própria do boot | Depois |
 |----|-----------------------|--------|
-| Tag | `<inf> tag: RTLS tag 0x1001: 10 Hz, 4 ancoras a partir de 0xa001` | linhas `R,...` a 10 Hz; resumo `TWR: ...` a cada 10 s; até o M4, um aviso `localizacao (EKF, M4) ainda nao implementada` |
+| Tag | `<inf> tag: RTLS tag 0x1001: 10 Hz, 4 ancoras a partir de 0xa001` e `<inf> tag: LOC 2D: sigma_r ...` | linhas `R,...` a 10 Hz e, com ≥ 3 âncoras, `L,...`; resumo `TWR: ...` e `LOC: ...` a cada 10 s |
 | Âncora | `<inf> anchor: RTLS ancora 0xa001 em (0, 0, 2500) mm` | resumo `TWR: POLL ...` a cada 10 s |
 | Gateway | `<inf> gateway: RTLS gateway 0x0001: ate 16 tags` | — |
 | Ping/pong | `<inf> pingpong: UWB ping-pong: ...` | resumo a cada 100 pings |
@@ -281,6 +281,23 @@ python tools/rtls_log.py stats captures/T2.2_5m.csv --true-distance 5.0
 | `mín` / `máx` | extremos; *outliers* aparecem aqui |
 | `RX dBm` / `1º cam.` | potência total e do primeiro caminho |
 | `viés` | média − distância real (só com `--true-distance`), em mm e em ticks |
+
+**Posições (a partir do M4).** Se a tag imprimir linhas `L,...`, o
+`capture` grava também `<arquivo>_pos.csv` ao lado do CSV de distâncias. O
+subcomando `pos` resume esse arquivo:
+
+```bash
+python tools/rtls_log.py pos captures/T4.10_p1_pos.csv --true-pos 2.0,3.0 --skip 10
+```
+
+| Campo | Significado |
+|-------|-------------|
+| 1ª linha | posições, duração, taxa, modo 2D/3D, quantas com `INIT` e com `OUTLIER`, distâncias usadas por posição |
+| `média mm` / `desvio` / `mín` / `máx` | por eixo |
+| `sig.EKF` | média do σ que o próprio EKF declarou; perto do `desvio` = filtro consistente |
+| `viés` / `RMSE 2D` / `CEP50` / `CEP95` | só com `--true-pos x,y[,z]` (m); CEP é o raio que contém 50 % / 95 % dos erros horizontais |
+
+`--skip N` descarta as N primeiras posições (convergência do filtro).
 
 ### 2.9 Condições de medida
 
@@ -386,7 +403,7 @@ rodadas sem resposta. Isso é o esperado no T0.4.
 ### Critério de aceite
 
 - [x] T0.1 e T0.2 no Windows
-- [ ] T0.3 executado (native_sim ou placa)
+- [x] T0.3 executado (placa, T0.3b)
 - [ ] T0.4 numa placa real
 
 ---
@@ -693,7 +710,7 @@ tempo de rodada.
 
 ---
 
-## 7. M4 — Localização: multilateração + EKF 📐
+## 7. M4 — Localização: multilateração + EKF 🧪
 
 **Objetivo:** posição estimada na tag, com incerteza, a cada ciclo.
 **Depende de:** M0 (M4a, simulação) e M3 (M4b, hardware).
@@ -704,10 +721,12 @@ tempo de rodada.
 
 ### Implementação
 
-- [ ] matrizes pequenas em `float` em `lib/loc/`
-- [ ] `rtls_loc_multilaterate()`: LS linear + Gauss-Newton, modo 2D, GDOP
-- [ ] `rtls_loc_update()`: predição CV, atualização sequencial, Joseph, gating χ², reinicialização
-- [ ] CSV de posição na tag (`L,round,t_ms,x,y,z,sx,sy,sz,n,flags`) e suporte no `tools/rtls_log.py` *(a implementar)*
+- [x] matrizes pequenas em `float` em `lib/loc/` (`loc_mat.c`)
+- [x] `rtls_loc_multilaterate()`: LS linear + Gauss-Newton, modo 2D, GDOP
+- [x] `rtls_loc_update()`: predição CV, atualização sequencial, Joseph, gating χ², reinicialização
+- [x] CSV de posição na tag (`L,round,t_ms,x,y,z,sx,sy,sz,n,flags`) e `rtls_log.py pos`
+- [x] tempo do EKF no resumo de 10 s da tag (linha `LOC:`)
+- [ ] reprocessamento offline do CSV de distâncias (T4.8)
 
 ### Testes automatizados (`native_sim`, novos em `tests/unit`)
 
@@ -721,16 +740,23 @@ tempo de rodada.
 | T4.6 | só 2 distâncias por várias rodadas | o filtro segue sem divergir |
 | T4.7 | NEES médio em 100 execuções | ≈ dimensão do estado |
 | T4.8 | reprocessar o CSV real do T3.2 offline (host) | trajetória coerente com a posição parada |
+| T4.12 | 1,5 s sem rodadas; depois só 2 distâncias com o filtro zerado | reinicia com `INIT`; `-EAGAIN` |
+| T4.13 | salto de 2,8 m da tag (solução espelhada) | reinicia em até 7 rodadas; erro final < 10 cm |
+| T4.14 | matrizes: produto, Cholesky, inversa, matriz singular | resultados exatos; `-EDOM` na singular |
+
+Resultados na placa (T0.3b, 01/11/2026): T4.1–T4.7 e T4.12–T4.14
+aprovados. Os números estão em [04 §5.7](04-algoritmos.md#57-testes-em-simulação).
 
 ```bash
 # T4.1-T4.7: Linux/WSL (-v mostra cada caso)
 west twister -T tests/unit -p native_sim -v
 
-# Windows: mesmos testes rodando na placa (ver T0.3b)
+# Windows: mesmos testes rodando na placa (ver T0.3b); o console mostra o
+# RMSE de T4.3-T4.5 e o NEES de T4.7
 west build -p always -b decawave_dwm1001_dev tests/unit -d build/unit_board
 west flash -d build/unit_board --dev-id $T1
 
-# T4.8: reprocessamento offline do captures/T3.2_centro.csv (ferramenta a implementar no M4)
+# T4.8: reprocessamento offline do captures/T3.2_centro.csv (ferramenta a implementar)
 ```
 
 ### Preparação da bancada
@@ -742,6 +768,9 @@ ao modo 2D:
 west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag -- "-DEXTRA_CONF_FILE=nodes/t1.conf" -DCONFIG_RTLS_LOC_TAG_HEIGHT_MM=1000
 west flash -d build/tag --dev-id $T1
 ```
+
+No boot, a tag confirma a configuração do filtro:
+`LOC 2D: sigma_r 100 mm, sigma_a 1000 mm/s2, gating 663/100, z fixo (2D) 1000 mm`.
 
 | Parâmetro de sintonia | Kconfig | Padrão |
 |-----------------------|---------|--------|
@@ -762,20 +791,23 @@ no mesmo referencial das âncoras.
 | T4.11 | Percurso numa linha marcada a passo lento | erro ao longo do percurso registrado (E6) |
 
 ```bash
-# T4.9: o tempo do EKF entra no resumo de 10 s da tag (a implementar no M4)
+# T4.9: no resumo de 10 s, a linha
+#   LOC: <n> posicoes, <a> aceitas, <r> rejeitadas, <k> reinicios, EKF ultimo <u> us, max <m> us
+# traz o tempo de rtls_loc_update(); critério: max <= 1000 us
 python -m serial.tools.miniterm <COM de T1> 115200
 
-# T4.10: uma captura por ponto (P1 a P9); as linhas L,... exigem o suporte
-# no rtls_log.py previsto no M4
+# T4.10: uma captura por ponto (P1 a P9); o capture grava também T4.10_p1_pos.csv
 python tools/rtls_log.py capture --port <COM de T1> --out captures/T4.10_p1.csv --seconds 120
+python tools/rtls_log.py pos captures/T4.10_p1_pos.csv --true-pos <x>,<y> --skip 10
 
 # T4.11
 python tools/rtls_log.py capture --port <COM de T1> --out captures/T4.11_linha.csv --seconds 60
+python tools/rtls_log.py pos captures/T4.11_linha_pos.csv
 ```
 
 ### Critério de aceite
 
-- [ ] T4.3 e T4.4 em simulação
+- [x] T4.3 e T4.4 em simulação (na placa, 01/11/2026)
 - [ ] T4.9 ≤ 1 ms e T4.10 RMSE ≤ 15 cm
 
 ### Registrar

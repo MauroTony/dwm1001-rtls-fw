@@ -36,12 +36,12 @@ Markdown), e ficam versionados como texto junto com o código.
 flowchart LR
     subgraph area["Área monitorada"]
         A["4 × Âncora<br/>apps/anchor<br/>responder DS-TWR 🧪"]:::bench
-        T["Tag<br/>apps/tag<br/>initiator DS-TWR 🧪<br/>EKF 📐"]:::bench
+        T["Tag<br/>apps/tag<br/>initiator DS-TWR 🧪<br/>EKF ✅"]:::bench
     end
     G["Gateway<br/>apps/gateway<br/>RX + tabela 🧪<br/>SPI escravo 📐"]:::bench
     H["Host<br/>fora deste repositório"]:::ext
     T <-- "POLL · RESP · FINAL · REPORT" --> A
-    T -. "POSITION (após o M4)" .-> G
+    T -- "POSITION (10 Hz)" --> G
     G -. "SPI TLV (M6)" .-> H
     classDef bench fill:#fff3cd,stroke:#b8860b,color:#111
     classDef ext fill:#e3f2fd,stroke:#1565c0,color:#111
@@ -49,8 +49,9 @@ flowchart LR
 
 **Hoje, de ponta a ponta:**
 1. A tag mede a distância até as 4 âncoras a 10 Hz e corrige o viés por RSL.
-2. Ela imprime as distâncias em CSV.
-3. A posição (M4) e o envio ao host (M6) ainda não existem.
+2. O EKF estima a posição; a tag imprime distâncias e posições em CSV e envia
+   o POSITION ao gateway.
+3. O envio ao host (M6) ainda não existe.
 
 ### 1.2 Camadas do firmware
 
@@ -65,7 +66,7 @@ flowchart TB
         twr["twr<br/>initiator · responder · common 🧪"]:::bench
         math["twr_math<br/>DS-TWR · RSL · tempos ✅"]:::ok
         proto["proto<br/>frames.c ✅"]:::ok
-        loc["loc<br/>EKF 📐"]:::stub
+        loc["loc<br/>LS · EKF · matrizes ✅"]:::ok
         hif["host_if<br/>SPIS + DRDY 📐"]:::stub
         led["common<br/>status_led.c 🧪"]:::bench
     end
@@ -119,19 +120,19 @@ flowchart TB
 
 | Caminho | Conteúdo | Situação |
 |---------|----------|----------|
-| [`apps/tag`](../apps/tag) | laço de 10 Hz: DS-TWR → CSV → (EKF) → (POSITION) | 🧪 |
+| [`apps/tag`](../apps/tag) | laço de 10 Hz: DS-TWR → CSV → EKF → POSITION | 🧪 |
 | [`apps/anchor`](../apps/anchor) | responder DS-TWR; `nodes/a1..a4.conf` por âncora | 🧪 |
 | [`apps/gateway`](../apps/gateway) | RX de POSITION, tabela de tags, publicação ao host | 🧪 (host 📐) |
 | [`drivers/dw1000`](../drivers/dw1000) | driver próprio do DW1000 + mapa de registradores | 🧪 |
 | [`lib/twr`](../lib/twr) | motor DS-TWR e matemática | 🧪 / ✅ |
 | [`lib/proto`](../lib/proto) | montagem e validação de quadros | ✅ |
-| [`lib/loc`](../lib/loc) | configuração do EKF; algoritmo pendente | 📐 |
+| [`lib/loc`](../lib/loc) | multilateração LS + Gauss-Newton, EKF, matrizes pequenas | ✅ |
 | [`lib/host_if`](../lib/host_if) | init do SPI escravo e do DRDY; protocolo pendente | 📐 |
 | [`lib/common`](../lib/common) | LEDs de status | 🧪 |
 | [`include/rtls`](../include/rtls) | headers públicos de todas as bibliotecas | — |
 | [`samples/uwb_pingpong`](../samples/uwb_pingpong) | bancada do driver (M1) | 🧪 |
-| [`tests/unit`](../tests/unit) | 15 testes ztest | ✅ |
-| [`tools/rtls_log.py`](../tools/rtls_log.py) | captura CSV, estatística, calibração de antena | ✅ |
+| [`tests/unit`](../tests/unit) | 28 testes ztest | ✅ |
+| [`tools/rtls_log.py`](../tools/rtls_log.py) | captura CSV, estatística de distâncias e posições, calibração de antena | ✅ |
 | [`scripts/`](../scripts) | setup Windows/Linux, ativação, lista de placas | ✅ |
 
 ### 1.4 O que entra em cada firmware
@@ -142,7 +143,7 @@ flowchart TB
 | `lib/twr` (motor) | ● | ● | | | |
 | `lib/twr` (`twr_math`) | ● | ● | | ● | ● |
 | `lib/proto` | ● | ● | ● | ● | ● |
-| `lib/loc` | ● | | | | |
+| `lib/loc` | ● | | | | ● |
 | `lib/host_if` | | | ● | | |
 | `lib/common` (LEDs) | ● | ● | ● | ● | |
 
@@ -313,16 +314,41 @@ e para cada âncora o ID, a posição, `distance_m` (corrigida),
 
 ---
 
-### 2.5 Localização · `lib/loc/` 📐
+### 2.5 Localização · `lib/loc/` ✅
 
-| Função | Situação | Uso |
-|--------|----------|-----|
-| `rtls_loc_default_cfg()` | ✅ lê σ_r, σ_a, gating e o modo 2D/3D do Kconfig | `apps/tag` |
-| `rtls_loc_init()` / `_reset()` | ✅ zera o estado | `apps/tag` |
-| `rtls_loc_multilaterate()` | 📐 `-ENOSYS` | — |
-| `rtls_loc_update()` | 📐 `-ENOSYS` (a tag registra o aviso uma vez e segue) | `apps/tag` |
+Núcleo do M4. Recebe as distâncias de uma rodada e devolve a posição, a
+velocidade e a incerteza. É pura: só `float` e `<math.h>`, sem kernel nem
+hardware. Especificação: [04-algoritmos.md](04-algoritmos.md) §4–5.
 
-Especificação: [04-algoritmos.md](04-algoritmos.md) §4–5. É o núcleo do M4.
+```mermaid
+flowchart LR
+    in["rtls_range_set<br/>distâncias + posição<br/>das âncoras"]:::ok --> u{"filtro<br/>inicializado?"}
+    u -- não --> ls["solve(): LS linear<br/>+ 3 Gauss-Newton"]:::ok --> i0["x = [p; 0]<br/>P0 = max(σr², s²)(JᵀJ)⁻¹"]:::ok
+    u -- sim --> pr["predict(): F, Q<br/>com o dt real"]:::ok --> up["update_range()<br/>da mais forte à mais fraca<br/>gating · Joseph"]:::ok
+    up --> chk{"P válida?<br/>metade rejeitada<br/>> 5 rodadas?"}
+    chk -- "reinicia" --> ls
+    chk -- ok --> out["rtls_position<br/>pos · vel · σ · flags"]:::ok
+    i0 --> out
+    classDef ok fill:#d4edda,stroke:#2e7d32,color:#111
+```
+
+| Função | O que faz | Uso |
+|--------|-----------|-----|
+| `rtls_loc_default_cfg()` | lê σ_r, σ_a, gating, altura e o modo 2D/3D do Kconfig | `apps/tag` |
+| `rtls_loc_init()` / `_reset()` | valida a configuração e zera o estado | `apps/tag`, testes |
+| `rtls_loc_multilaterate()` | LS relativo à âncora 0 + Gauss-Newton; devolve a posição e o GDOP; `-EINVAL` com poucas distâncias ou geometria degenerada | testes, baseline |
+| `rtls_loc_update()` | um ciclo do EKF; `-EAGAIN` enquanto não houver distâncias para inicializar | `apps/tag` |
+| `rtls_loc_get_stats()` | posições, distâncias aceitas e rejeitadas, reinicializações | resumo de 10 s da tag |
+| `rtls_mat_*` (`loc_mat.c`) | produto, produto por transposta, Cholesky, inversa SPD, traço; até 6×6 | `loc.c`, testes (NEES) |
+
+**Quando reinicializa** (a próxima posição vem da multilateração, com o flag
+`INIT`):
+
+| Condição | Por quê |
+|----------|---------|
+| 1 s sem nenhuma distância aceita | o estado envelheceu demais |
+| > 5 rodadas seguidas com **metade ou mais** rejeitadas **e** a rodada coerente entre si ($s^2 \le \gamma\,\sigma_r^2$) | o filtro está preso numa solução espelhada, que concorda só com parte das âncoras (T4.13) |
+| soma das variâncias de posição > 100 m² ou estado não finito | proteção numérica |
 
 ### 2.6 Interface com o host · `lib/host_if/` 📐
 
@@ -349,9 +375,9 @@ Protocolo: [05-interface-spi-gateway.md](05-interface-spi-gateway.md).
 flowchart LR
     s["Início<br/>LEDs · dw1000_init/configure<br/>initiator_init · loc_init"] --> c["next += 100 ms"]
     c --> r["rtls_twr_initiator<br/>_run_round()"]
-    r -- ok --> p["print_ranges()<br/>CSV R,..."] --> l["rtls_loc_update()"]
-    l -- "0 (após o M4)" --> pos["send_position()<br/>→ gateway"] --> st
-    l -- "-ENOSYS (hoje)" --> st
+    r -- ok --> p["print_ranges()<br/>CSV R,..."] --> l["timed_loc_update()<br/>rtls_loc_update()"]
+    l -- 0 --> pp["print_position()<br/>CSV L,..."] --> pos["send_position()<br/>→ gateway"] --> st
+    l -- "-EAGAIN (inicializando)" --> st
     r -- erro --> st{"10 s?"}
     st -- sim --> ls["log_stats()"] --> z
     st -- não --> z["k_sleep até next<br/>(K_TIMEOUT_ABS_MS)"]
@@ -361,8 +387,10 @@ flowchart LR
 | Função local | O que faz |
 |--------------|-----------|
 | `print_ranges()` | uma linha `R,round,t_ms,ancora,dist_mm,rx_cdbm,fp_cdbm,raw_mm` por distância |
-| `log_stats()` | resumo de 10 s: rodadas, % completas, tempo de rodada, por âncora |
-| `send_position()` | monta e envia o POSITION (alcançado quando o M4 existir) |
+| `timed_loc_update()` | chama `rtls_loc_update()` e mede o tempo com a API de *timing* (T4.9) |
+| `print_position()` | uma linha `L,round,t_ms,x,y,z,sx,sy,sz,n,flags` por posição (mm) |
+| `log_stats()` | resumo de 10 s: rodadas, % completas, tempo de rodada, por âncora; linha `LOC:` com posições, aceitas, rejeitadas, reinícios e tempo do EKF |
+| `send_position()` | monta e envia o POSITION ao gateway |
 
 ### 2.9 Firmware da âncora · `apps/anchor/src/main.c` 🧪
 
@@ -400,15 +428,23 @@ Valida o driver isoladamente (M1).
 |-------|--------|-------|
 | `twr_math` | 11 | wrap de 40 bits, DS-TWR ideal e com ±20 ppm, intervalos, conversões de tempo, slots, RSL por Friis, tabela de viés, distância corrigida |
 | `frames` | 4 | montagem/parse, rejeição de PAN e tamanho, quadro grande demais, tamanhos |
+| `loc_mat` | 3 | produto, Cholesky e inversa, rejeição de matriz singular (T4.14) |
+| `loc` | 10 | multilateração exata 2D/3D e degenerada; EKF parado, em reta, com *outliers*, com 2 distâncias, NEES, reinício por tempo e por salto (T4.1–T4.7, T4.12–T4.13) |
 
-Execução: `native_sim` (Linux/WSL) ou gravados na placa (`build/unit_board`).
+Os testes do EKF usam trajetórias sintéticas com um gerador determinístico
+(xorshift32 + Box-Muller) e imprimem o RMSE e o NEES obtidos.
+
+Execução: `native_sim` (Linux/WSL) ou gravados na placa (`build/unit_board`,
+com FPU ligada por `boards/decawave_dwm1001_dev.conf`).
 
 ### 2.13 Ferramentas e scripts
 
 ```mermaid
 flowchart LR
-    uart["UART da tag<br/>linhas R,..."] -->|capture| csv[("CSV")]
+    uart["UART da tag<br/>linhas R,... e L,..."] -->|capture| csv[("CSV")]
+    uart -->|capture| pcsv[("_pos.csv")]
     csv -->|stats| s["sucesso · média corrigida e bruta<br/>desvio · potência · viés"]
+    pcsv -->|pos| ps["dispersão por eixo · σ do EKF<br/>RMSE · CEP50/95"]
     csv -->|calib| c1["Δ atraso de antena<br/>(par igual)"]
     csv -->|calib3| c3["Δ por placa<br/>(3 placas)"]
 ```
@@ -460,6 +496,7 @@ flowchart LR
 | Timer | `K_TIMER_DEFINE` | `status_led.c` | heartbeat |
 | Workqueue | `K_WORK_DELAYABLE_DEFINE` | âncora | resumo sem parar o responder |
 | Ciclos de CPU | `k_cycle_get_32()` | initiator | tempo da rodada |
+| *Timing* | `timing_init()`, `timing_counter_get()`, `timing_cycles_to_ns()` | tag | tempo do EKF (TIMER2 a 16 MHz ou DWT; o `k_cycle_get_32()` do nRF52 conta o RTC, ~30 µs) |
 | Log | `LOG_MODULE_REGISTER`, `LOG_INF` | todos | logs por módulo, em modo diferido |
 | `printk` | `printk()` | tag | CSV síncrono na UART |
 | Devicetree | `SPI_DT_SPEC_GET`, `GPIO_DT_SPEC_GET`, `DT_CHOSEN` | `dw1000.c`, `host_if.c`, LEDs | pinos e barramentos sem número fixo no código |
@@ -526,7 +563,7 @@ flowchart TB
 | Configuração | Kconfig não tem ponto flutuante | grandezas inteiras com unidade no nome (`_MM`, `_US`, `_X10`) |
 | Testes | `native_sim` não roda no Windows | testes gravados na placa ou em Linux/WSL |
 | Reprodutibilidade | versão do Zephyr e dos módulos fixada | `west.yml` com `revision: v4.4.0` |
-| Memória | alocação estática; uso visível no build | tag: 49,9 KB flash / 11,7 KB RAM |
+| Memória | alocação estática; uso visível no build | tag: 54,8 KB flash / 11,8 KB RAM (com o EKF) |
 
 ---
 
@@ -591,25 +628,24 @@ a mudança. Confira sempre o `.config`.
 | `RTLS_TWR_RANGE_BIAS_CORRECTION` | `y` | aplica a tabela do APS011 a cada distância | desligado, 1 m sai ~10,5 cm curto e o M2 reprova | só a tag usa |
 | `RTLS_TWR_RANGE_BIAS_GAIN_DB_X10` | 0 (−200 a 200) | ganho das antenas menos perdas no Friis | desloca o RSL estimado; a distância de calibração passa a 5,0 m × 10^(G/20) (ex.: +3 dB → 7,1 m) | só a tag |
 
-### 4.6 Localização (preparados para o M4)
+### 4.6 Localização
 
-Hoje esses parâmetros só são lidos por `rtls_loc_default_cfg()` e **não têm
-efeito**, porque o EKF ainda não existe.
+Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 
-| Parâmetro | Padrão | Efeito previsto |
-|-----------|--------|-----------------|
-| `RTLS_LOC_MODE_2D` / `_3D` | 2D | dimensão do estado; 3D exige âncoras não coplanares |
-| `RTLS_LOC_TAG_HEIGHT_MM` | 1000 | z fixo da tag no modo 2D |
-| `RTLS_LOC_RANGE_STD_MM` | 100 (1–5000) | σ_r: maior suaviza e confia menos nas medidas |
-| `RTLS_LOC_ACCEL_STD_MMS2` | 1000 (1–100000) | σ_a: maior responde mais rápido a manobras, com mais ruído |
-| `RTLS_LOC_GATE_CHI2_X100` | 663 | limiar χ²: menor rejeita mais outliers |
+| Parâmetro | Padrão (faixa) | O que faz | Impacto ao alterar |
+|-----------|----------------|-----------|--------------------|
+| `RTLS_LOC_MODE_2D` / `_3D` | 2D | dimensão do estado (4 ou 6 estados) | 3D exige ≥ 4 âncoras **não coplanares**; com todas no teto a multilateração devolve `-EINVAL` e o filtro não inicializa |
+| `RTLS_LOC_TAG_HEIGHT_MM` | 1000 | z fixo da tag no modo 2D | erro na altura vira erro horizontal, maior perto das âncoras ($d' = \sqrt{d^2 - \Delta z^2}$) |
+| `RTLS_LOC_RANGE_STD_MM` | 100 (1–5000) | σ_r: ruído de distância assumido | maior suaviza, confia menos nas medidas e alarga o gating; abaixo do ruído real o filtro rejeita medidas boas e o NEES sobe |
+| `RTLS_LOC_ACCEL_STD_MMS2` | 1000 (1–100000) | σ_a: aceleração não modelada | maior responde mais rápido a manobras, com mais ruído; menor suaviza a tag parada, mas atrasa nas curvas e pode rejeitar medidas boas |
+| `RTLS_LOC_GATE_CHI2_X100` | 663 | γ do gating $\nu^2/S$ (99 % com 1 GL) | menor rejeita mais *outliers* e mais medidas boas (~1 % das boas com 6,63); também é o limiar de coerência da reinicialização ($s^2 \le \gamma\,\sigma_r^2$) |
 
 ### 4.7 Saída e diagnóstico
 
 | Parâmetro | Padrão | O que faz | Impacto ao alterar |
 |-----------|--------|-----------|--------------------|
-| `RTLS_TAG_CSV_OUTPUT` | `y` | linhas `R,...` na UART | ~15 ms de UART síncrona por ciclo com 4 âncoras; desligue acima de ~40 Hz |
-| `RTLS_TAG_STATS_PERIOD_S` | 10 (0 desliga) | resumo do TWR na tag | menor dá mais detalhe; os contadores zeram a cada resumo |
+| `RTLS_TAG_CSV_OUTPUT` | `y` | linhas `R,...` (distâncias) e `L,...` (posição) na UART | ~20 ms de UART síncrona por ciclo com 4 âncoras; desligue acima de ~30 Hz |
+| `RTLS_TAG_STATS_PERIOD_S` | 10 (0 desliga) | resumo do TWR e do EKF na tag | menor dá mais detalhe; os contadores e o máximo do tempo do EKF zeram a cada resumo |
 | `RTLS_STATUS_LED_HEARTBEAT_MS` | 500 | meio período do LED verde | só visual |
 | `RTLS_DW1000_LOG_LEVEL_*`, `RTLS_TWR_LOG_LEVEL_*`, `RTLS_HOST_IF_LOG_LEVEL_*` | padrão do Zephyr | nível de log por módulo | `DBG` no `rtls_twr` registra cada quadro descartado e pode inundar a UART |
 
@@ -634,11 +670,14 @@ efeito**, porque o EKF ainda não existe.
 
 | Opção | Onde | Por quê | Impacto ao alterar |
 |-------|------|---------|--------------------|
-| `CONFIG_FPU=y` | tag | `float` do EKF e `log10f` em hardware | sem ela tudo vira ponto flutuante emulado, bem mais lento |
-| `CONFIG_MAIN_STACK_SIZE=4096` | tag | buffers de quadro e conjuntos de distâncias na pilha | reduzir arrisca estouro de pilha |
+| `CONFIG_FPU=y` | tag; testes na placa (`tests/unit/boards/decawave_dwm1001_dev.conf`) | `float` do EKF e `log10f` em hardware | sem ela tudo vira ponto flutuante emulado, bem mais lento |
+| `CONFIG_MAIN_STACK_SIZE=4096` | tag | buffers de quadro, conjuntos de distâncias e as matrizes do EKF (~1,2 KB no pior caminho) na pilha | reduzir arrisca estouro de pilha |
+| `CONFIG_TIMING_FUNCTIONS=y` | tag | tempo de `rtls_loc_update()` no resumo de 10 s (T4.9) | ocupa o TIMER2 do nRF52 (ou usa o DWT); desligar tira a medida |
 | `CONFIG_LOG_MODE_DEFERRED=y` | todos | o log não bloqueia o rádio | o modo imediato bloquearia a thread do rádio durante a UART |
 | `CONFIG_SPI=y`, `CONFIG_GPIO=y` | todos | barramentos do DW1000 e LEDs | obrigatórios |
 | `CONFIG_ZTEST=y` | testes | framework de teste | — |
+| `CONFIG_ZTEST_STACK_SIZE=4096` | testes | os testes do EKF chamam a localização inteira na thread do ztest | com o padrão (1 KB) a pilha estoura |
+| `CONFIG_CBPRINTF_FP_SUPPORT=y` | testes | `%f` nos resumos (RMSE, NEES) e nas mensagens de falha | sem ela os números saem como texto literal |
 
 ### 4.11 Parâmetros de devicetree
 
@@ -662,6 +701,14 @@ efeito**, porque o EKF ainda não existe.
 | Tabela de viés e Friis | APS011 tab. 2, −14,3 dBm, canal 5 | `twr_math.c` | válidos só para canal 5 / PRF 64 |
 | `STATS_PERIOD` | 10 s | `apps/anchor/src/main.c` | resumo da âncora |
 | `RTLS_HOST_IF_RECORDS_PER_PAGE` | 9 | `host_if.h` | limite de 255 B do SPIS |
+| `RTLS_LOC_MAX_STATES` / `RTLS_MAT_MAX` | 6 | `loc.h`, `loc_mat.h` | estado 3D [p; v]; tamanho fixo das matrizes |
+| `LOC_GN_ITERS` / `LOC_GN_STOP_M` | 3 / 0,1 mm | `loc.c` | Gauss-Newton após o LS; para antes se o passo for menor |
+| `LOC_TIMEOUT_MS` | 1000 ms | `loc.c` | sem nenhuma distância aceita por esse tempo, reinicializa |
+| `LOC_MAX_REJECT_STREAK` | 5 rodadas | `loc.c` | acima disso, com metade ou mais rejeitadas e rodada coerente, reinicializa |
+| `LOC_MAX_POS_VAR_M2` | 100 m² | `loc.c` | soma das variâncias de posição acima disso = filtro perdido |
+| `LOC_INIT_VEL_STD_MPS` | 1 m/s | `loc.c` | σ inicial de cada componente da velocidade |
+| `LOC_MIN_RANGE_M` | 1 mm | `loc.c` | distância prevista mínima para linearizar (evita dividir por ~0) |
+| `CHOL_REL_EPS` | 10⁻⁶ × maior diagonal | `loc_mat.c` | pivô mínimo do Cholesky: abaixo disso a matriz é singular (geometria degenerada) |
 
 ---
 

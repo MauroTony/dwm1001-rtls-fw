@@ -244,23 +244,35 @@ corrigida, que a 5 m é praticamente igual à bruta.
 
 Dadas as âncoras $\mathbf a_i$ e as distâncias $d_i$, subtrai-se a equação da
 âncora 0 de cada $\lVert \mathbf p - \mathbf a_i \rVert^2 = d_i^2$, o que dá
-um sistema **linear**:
+um sistema **linear**. O código resolve em $\mathbf q = \mathbf p - \mathbf a_0$,
+para não perder precisão em `float` com coordenadas grandes:
 
 $$
-2(\mathbf a_i - \mathbf a_0)^\top \mathbf p = d_0^2 - d_i^2 + \lVert\mathbf a_i\rVert^2 - \lVert\mathbf a_0\rVert^2,
+2(\mathbf a_i - \mathbf a_0)^\top \mathbf q = d_0^2 - d_i^2 + \lVert\mathbf a_i - \mathbf a_0\rVert^2,
 \quad i = 1..N-1
-\;\;\Rightarrow\;\; A\mathbf p = \mathbf b,
-\quad \hat{\mathbf p} = (A^\top A)^{-1} A^\top \mathbf b
+\;\;\Rightarrow\;\; A\mathbf q = \mathbf b,
+\quad \hat{\mathbf q} = (A^\top A)^{-1} A^\top \mathbf b
 $$
+
+As equações normais são acumuladas direto em $A^\top A$ (2×2 ou 3×3) e
+resolvidas por Cholesky. Um pivô menor que $10^{-6}$ vezes a maior diagonal
+indica geometria degenerada, e a função devolve `-EINVAL`.
 
 - **3D:** exige ≥ 4 âncoras **não coplanares**.
 - **2D com altura fixa** $z_t$: usa as distâncias horizontais
   $d_i' = \sqrt{d_i^2 - (z_t - z_i)^2}$. Exige ≥ 3 âncoras não colineares.
-- **Refinamento Gauss-Newton** (2–3 iterações): com
+- **Refinamento Gauss-Newton** (até 3 iterações): com
   $J_i = (\hat{\mathbf p} - \mathbf a_i)^\top / \lVert \hat{\mathbf p} - \mathbf a_i \rVert$
   e $\Delta\mathbf p = (J^\top J)^{-1} J^\top (\mathbf d - h(\hat{\mathbf p}))$.
+  Em 2D, $h_i$ usa a altura fixa: $h_i = \sqrt{(x - x_i)^2 + (y - y_i)^2 + (z_t - z_i)^2}$.
+  Para antes se o passo ficar abaixo de 0,1 mm.
 - **Qualidade da geometria:** $\text{GDOP} = \sqrt{\operatorname{tr}\big((J^\top J)^{-1}\big)}$.
-  Valores altos indicam geometria ruim. Fica registrado como diagnóstico.
+  Valores altos indicam geometria ruim. `rtls_loc_multilaterate()` devolve o
+  GDOP como diagnóstico.
+- **Coerência da rodada:** a variância a posteriori
+  $s^2 = \sum_i (d_i - h_i(\hat{\mathbf p}))^2 / (N - n)$, com $n$ = 2 ou 3,
+  mede se as distâncias concordam entre si. Com ruído $\sigma_r$ e sem
+  *outliers*, $s^2 \approx \sigma_r^2$.
 
 ## 5. Filtro de Kalman estendido (EKF)
 
@@ -294,8 +306,9 @@ No modo 2D, $h_i$ inclui o termo fixo $(z_t - z_i)^2$ dentro da raiz.
 ### 5.3 Ciclo
 
 1. **Predição:** $\hat{\mathbf x}^- = F\hat{\mathbf x}$, $P^- = FPF^\top + Q$.
-2. **Atualização sequencial**, uma distância por vez, em ordem crescente de
-   $\sigma$ ou de potência. Assim não há inversão de matriz, só escalares:
+2. **Atualização sequencial**, uma distância por vez, da maior para a menor
+   potência recebida (`rx_power_cdbm`): o sinal mais forte tende a ser o mais
+   confiável. Assim não há inversão de matriz, só escalares:
    - $\nu = z_i - h_i(\hat{\mathbf x})$, $S = H_i P H_i^\top + \sigma_r^2$
    - **Gating:** se $\nu^2/S > \gamma$ (χ² com 1 GL; $\gamma = 6{,}63$ para 99 %),
      a medida é rejeitada e o flag `OUTLIER` é marcado.
@@ -306,11 +319,31 @@ No modo 2D, $h_i$ inclui o termo fixo $(z_t - z_i)^2$ dentro da raiz.
 
 ### 5.4 Inicialização e reinicialização
 
-- Na primeira rodada com distâncias suficientes, a posição vem da
-  multilateração LS (§4), com velocidade nula e
-  $P_0 = \operatorname{diag}(\sigma_{LS}^2, \ldots, (1\,\text{m/s})^2)$.
-- Reinicializa quando: 1 s sem atualização, mais de 5 rodadas seguidas com
-  todas as medidas rejeitadas, ou traço de P acima de um limite.
+- Na primeira rodada com distâncias suficientes (2D: ≥ 3; 3D: ≥ 4), a
+  posição vem da multilateração LS (§4), com velocidade nula. A saída leva o
+  flag `INIT`. A covariância inicial é a do próprio LS, inflada se a rodada
+  for incoerente:
+
+$$
+P_0 = \begin{bmatrix} \max(\sigma_r^2, s^2)\,(J^\top J)^{-1} & 0 \\ 0 & (1\,\text{m/s})^2 I \end{bmatrix}
+$$
+
+- Reinicializa (e já usa a rodada atual para a nova multilateração) quando:
+
+| Condição | Motivo |
+|----------|--------|
+| 1 s sem nenhuma distância **aceita** | estado velho demais |
+| > 5 rodadas seguidas com **metade ou mais** das distâncias rejeitadas, **e** a rodada atual coerente ($s^2 \le \gamma\,\sigma_r^2$) | o filtro está preso numa solução errada |
+| soma das variâncias de posição > 100 m², ou estado não finito | proteção numérica |
+
+> [!IMPORTANT]
+> A regra original ("todas as medidas rejeitadas") não basta. Depois de um
+> salto de ~3 m, o filtro pode ficar numa **solução espelhada**: a reflexão
+> da posição real em torno da reta entre duas âncoras, onde essas duas
+> distâncias batem e as outras duas são rejeitadas para sempre. A simulação
+> do T4.13 mostrou isso em 3 de 5 sementes. Exigir metade ou mais rejeitadas
+> resolve, e o teste de coerência evita reinicializar com uma rodada que tem,
+> ela mesma, distâncias ruins (dois NLOS, por exemplo).
 
 ### 5.5 Sintonia inicial (ajustar no M4)
 
@@ -322,9 +355,27 @@ No modo 2D, $h_i$ inclui o termo fixo $(z_t - z_i)^2$ dentro da raiz.
 
 ### 5.6 Custo computacional
 
-Em 3D, com 6 estados e 4 medidas, são algumas centenas de operações em
-`float` por ciclo. Na FPU do M4F a 64 MHz isso fica bem abaixo de 1 ms (meta
-do M4, medida com `k_cycle_get_32`).
+Por distância, a forma de Joseph faz dois produtos $n \times n$ (2·$n^3$
+multiplicações), mais a predição com outros dois. Em 2D ($n = 4$), com 4
+distâncias, são ~750 multiplicações em `float` por ciclo; em 3D ($n = 6$),
+~2 400. Na FPU do M4F a 64 MHz isso cabe com folga em 1 ms. A meta do M4 é
+medida na tag com a API de *timing* do Zephyr: a linha `LOC:` do resumo de
+10 s traz o tempo do último ciclo e o máximo (T4.9).
+
+### 5.7 Testes em simulação
+
+Resultados dos testes ztest rodando na DWM1001 (FPU ligada), com ruído
+gaussiano de 5 cm, 4 âncoras no teto de uma sala de 8 × 6 m e tag a 1 m de
+altura:
+
+| ID | Caso | Meta | Obtido |
+|----|------|------|--------|
+| T4.1 | multilateração sem ruído, 2D e 3D | < 1 mm | ✅ |
+| T4.3 | tag parada, 300 rodadas | RMSE ≤ 5 cm | 3,7 cm |
+| T4.4 | reta a 1 m/s | RMSE ≤ 10 cm | 2,7 cm |
+| T4.5 | +1 m numa âncora em 10 % das rodadas | rejeitadas, RMSE igual | 29/29 rejeitadas; 3,64 × 3,62 cm |
+| T4.7 | NEES médio em 100 execuções | ≈ 4 | 4,18 |
+| T4.13 | salto de 2,8 m | reinicia | reinicia em até 7 rodadas |
 
 ## 6. Saída e indicadores de qualidade
 
