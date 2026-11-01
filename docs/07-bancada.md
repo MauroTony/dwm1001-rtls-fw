@@ -67,7 +67,7 @@ Uma tag consultando uma âncora:
 
 ```bash
 west build -b decawave_dwm1001_dev apps/tag -d build/tag1 -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=1
-west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- -DEXTRA_CONF_FILE=nodes/a1.conf
+west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- "-DEXTRA_CONF_FILE=nodes/a1.conf"
 west flash -d build/tag1 --dev-id <serial tag>
 west flash -d build/anchor_a1 --dev-id <serial ancora>
 ```
@@ -123,7 +123,7 @@ Os comandos completos de cada captura estão no passo T2.3 de
 Coloque os valores de cada placa no fragmento de configuração dela. Para
 âncoras, acrescente as duas linhas em `apps/anchor/nodes/aN.conf`. Para a
 tag, crie um fragmento próprio, por exemplo `apps/tag/nodes/t1.conf`, e use
-`-DEXTRA_CONF_FILE=nodes/t1.conf`.
+`"-DEXTRA_CONF_FILE=nodes/t1.conf"`.
 
 **Aceite do M2:** a 1, 3 e 5 m, |viés| ≤ 10 cm e desvio ≤ 5 cm (1000
 medidas por distância).
@@ -135,7 +135,7 @@ medidas por distância).
 2. Grave:
 
    ```bash
-   west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- -DEXTRA_CONF_FILE=nodes/a1.conf
+   west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- "-DEXTRA_CONF_FILE=nodes/a1.conf"
    # ... a2, a3, a4
    west build -b decawave_dwm1001_dev apps/tag -d build/tag
    ```

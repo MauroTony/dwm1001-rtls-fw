@@ -254,12 +254,17 @@ raiz do repositório.
 west build -b decawave_dwm1001_dev apps/tag -d build/tag
 
 # Âncoras: uma pasta de build por âncora, com o fragmento de configuração dela
-west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- -DEXTRA_CONF_FILE=nodes/a1.conf
-west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a2 -- -DEXTRA_CONF_FILE=nodes/a2.conf
+west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- "-DEXTRA_CONF_FILE=nodes/a1.conf"
+west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a2 -- "-DEXTRA_CONF_FILE=nodes/a2.conf"
 
 # Gateway
 west build -b decawave_dwm1001_dev apps/gateway -d build/gateway
 ```
+
+> [!IMPORTANT]
+> Mantenha as aspas em `"-DEXTRA_CONF_FILE=..."`. Sem elas, o Windows
+> PowerShell 5.1 corta o argumento no ponto e o CMake procura `nodes/a1` (ver
+> §7).
 
 Comandos úteis:
 
@@ -356,6 +361,7 @@ calibração de antena (`tools/rtls_log.py`) estão descritos em
 | A porta serial some ou fica ocupada no Linux | ModemManager capturando o ttyACM | `sudo systemctl disable --now ModemManager` |
 | `DEV_ID inesperado 0xffffffff` / `0x00000000` | SPI sem resposta (DW1000 em reset ou sem alimentação) | conferir a alimentação da placa; testar com outra placa |
 | `native_sim` não compila no Windows | não suportado no Windows | use o WSL2 ou a CI |
+| `Ignoring extra path from command line: ".conf"` e `File not found: .../apps/anchor/nodes/a1` | o Windows PowerShell 5.1 cortou `-DEXTRA_CONF_FILE=nodes/a1.conf` no ponto | escreva a opção entre aspas (`"-DEXTRA_CONF_FILE=nodes/a1.conf"`) e refaça com `-p always` |
 | winget: `Failed to extract the contents of the archive` | extração de pacotes .zip bloqueada (antivírus/política) | o script continua e instala CMake/Ninja via pip; para gperf/dtc, instale manualmente se precisar |
 | Build lento no Windows | antivírus varrendo o workspace | avalie uma exclusão do Defender para a pasta do workspace (decisão sua; afeta a segurança) |
 

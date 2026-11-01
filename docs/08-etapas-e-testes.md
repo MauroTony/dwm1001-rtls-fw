@@ -161,7 +161,7 @@ opções `-D...` do primeiro build.
 |----|-------|---------|
 | Tag, 4 âncoras | `build/tag` | `west build -b decawave_dwm1001_dev apps/tag -d build/tag` |
 | Tag, 1 âncora (M2) | `build/tag1` | `west build -b decawave_dwm1001_dev apps/tag -d build/tag1 -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=1` |
-| Âncora AN | `build/anchor_aN` | `west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_aN -- -DEXTRA_CONF_FILE=nodes/aN.conf` |
+| Âncora AN | `build/anchor_aN` | `west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_aN -- "-DEXTRA_CONF_FILE=nodes/aN.conf"` |
 | Gateway | `build/gateway` | `west build -b decawave_dwm1001_dev apps/gateway -d build/gateway` |
 | Ping (M1) | `build/ping` | `west build -b decawave_dwm1001_dev samples/uwb_pingpong -d build/ping` |
 | Pong (M1) | `build/pong` | `west build -b decawave_dwm1001_dev samples/uwb_pingpong -d build/pong -- -DCONFIG_PINGPONG_ROLE_PONG=y` |
@@ -173,6 +173,13 @@ opções `-D...` do primeiro build.
 | Mudou ou removeu uma opção `-D...` | build limpo: acrescente `-p always` ao comando completo da tabela |
 | Conferir uma opção antes de gravar | `Select-String ANT_DLY build/tag/zephyr/.config` (PowerShell) · `grep ANT_DLY build/tag/zephyr/.config` (bash) |
 | Build terminou | a saída mostra a tabela `Memory region` e **nenhuma** linha `warning:` |
+
+> [!IMPORTANT]
+> **Aspas nas opções `-D...` com ponto.** O Windows PowerShell 5.1 corta um
+> argumento que começa com `-` no primeiro ponto:
+> `-DEXTRA_CONF_FILE=nodes/a1.conf` chega ao CMake como `nodes/a1` e `.conf`.
+> Escreva `"-DEXTRA_CONF_FILE=nodes/a1.conf"`. As aspas também funcionam no
+> bash, e por isso todos os comandos deste guia já as usam.
 
 > [!WARNING]
 > `CONFIG_RTLS_TWR_REPLY_DELAY_US` e `CONFIG_RTLS_TWR_SLOT_US` precisam ser
@@ -211,7 +218,7 @@ foreach ($n in $anchors.Keys) {
 # Linux (bash)
 for n in a1 a2 a3 a4; do
     serial_var=${n^^}                      # a1 -> A1
-    west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_$n -- -DEXTRA_CONF_FILE=nodes/$n.conf || break
+    west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_$n -- "-DEXTRA_CONF_FILE=nodes/$n.conf" || break
     west flash -d build/anchor_$n --dev-id "${!serial_var}" || break
 done
 ```
@@ -305,6 +312,7 @@ Uma linha por teste executado:
 | Console vazio | porta errada ou o boot já passou | confira o `list-boards`; `west reset` com o console aberto |
 | `PermissionError` na porta | outro programa com a porta aberta | feche o miniterm/PuTTY |
 | Opção nova sem efeito | cache do CMake na pasta de build | `-p always` e confira o `.config` |
+| `Ignoring extra path from command line: ".conf"` e `File not found: .../nodes/a1` | PowerShell cortou o `-DEXTRA_CONF_FILE` no ponto | ponha a opção entre aspas ([§2.5](#25-compilar)) e refaça com `-p always` |
 | `Permission denied: /dev/ttyACM0` (Linux) | usuário fora do `dialout` | [06 §7](06-configuracao-ambiente.md#7-solução-de-problemas) |
 
 Sintomas do rádio (PER, `PLL nao travou`, `TX atrasado`) estão em
@@ -336,7 +344,7 @@ Sintomas do rádio (PER, `PLL nao travou`, `TX atrasado`) estão em
 ```bash
 # T0.2: os três apps (nenhuma linha "warning:" na saída)
 west build -b decawave_dwm1001_dev apps/tag -d build/tag
-west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- -DEXTRA_CONF_FILE=nodes/a1.conf
+west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- "-DEXTRA_CONF_FILE=nodes/a1.conf"
 west build -b decawave_dwm1001_dev apps/gateway -d build/gateway
 
 # T0.3a: Linux/WSL; o resumo final do twister deve ter 0 failed
@@ -488,7 +496,7 @@ PER × distância (T1.3–T1.4), potência média × distância e temperatura am
 
 ```bash
 west build -b decawave_dwm1001_dev apps/tag -d build/tag1 -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=1
-west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- -DEXTRA_CONF_FILE=nodes/a1.conf
+west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1 -- "-DEXTRA_CONF_FILE=nodes/a1.conf"
 west flash -d build/tag1 --dev-id $T1
 west flash -d build/anchor_a1 --dev-id $A1
 ```
@@ -558,7 +566,7 @@ placas ([2.4](#24-identificar-as-placas)) e para os fragmentos:
 
 ```bash
 # depois de devolver cada placa ao seu papel (A = T1, B = A1)
-west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag1 -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=1 -DEXTRA_CONF_FILE=nodes/t1.conf
+west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag1 -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=1 "-DEXTRA_CONF_FILE=nodes/t1.conf"
 west build -d build/anchor_a1
 west flash -d build/tag1 --dev-id $T1
 west flash -d build/anchor_a1 --dev-id $A1
@@ -630,7 +638,7 @@ atrasos calibrados por placa (serial do J-Link → valores).
 3. Grave as quatro âncoras com o laço da [seção 2.6](#26-gravar) e a tag:
 
 ```bash
-west build -b decawave_dwm1001_dev apps/tag -d build/tag -- -DEXTRA_CONF_FILE=nodes/t1.conf
+west build -b decawave_dwm1001_dev apps/tag -d build/tag -- "-DEXTRA_CONF_FILE=nodes/t1.conf"
 west flash -d build/tag --dev-id $T1
 ```
 
@@ -730,7 +738,7 @@ Mesma montagem do M3 (âncoras já gravadas). Meça a altura da tag e passe-a
 ao modo 2D:
 
 ```bash
-west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag -- -DEXTRA_CONF_FILE=nodes/t1.conf -DCONFIG_RTLS_LOC_TAG_HEIGHT_MM=1000
+west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag -- "-DEXTRA_CONF_FILE=nodes/t1.conf" -DCONFIG_RTLS_LOC_TAG_HEIGHT_MM=1000
 west flash -d build/tag --dev-id $T1
 ```
 
@@ -815,7 +823,7 @@ python -m serial.tools.miniterm <COM do GW> 115200
 # T5.3: tire o USB da tag e cronometre até a entrada sumir do log do gateway
 
 # T5.4: segunda tag com outro ID (crie apps/tag/nodes/t2.conf com os atrasos dela)
-west build -b decawave_dwm1001_dev apps/tag -d build/tag_t2 -- -DCONFIG_RTLS_NODE_ID=0x1002 -DEXTRA_CONF_FILE=nodes/t2.conf
+west build -b decawave_dwm1001_dev apps/tag -d build/tag_t2 -- -DCONFIG_RTLS_NODE_ID=0x1002 "-DEXTRA_CONF_FILE=nodes/t2.conf"
 west flash -d build/tag_t2 --dev-id $T2
 ```
 
@@ -917,7 +925,7 @@ foreach ($n in $tags.Keys) {
 # Linux (bash)
 for i in 1 2 3 4; do
     serial_var=T$i
-    west build -b decawave_dwm1001_dev apps/tag -d build/tag_t$i -- -DCONFIG_RTLS_NODE_ID=$(printf '0x%04X' $((0x1000 + i))) -DEXTRA_CONF_FILE=nodes/t$i.conf || break
+    west build -b decawave_dwm1001_dev apps/tag -d build/tag_t$i -- -DCONFIG_RTLS_NODE_ID=$(printf '0x%04X' $((0x1000 + i))) "-DEXTRA_CONF_FILE=nodes/t$i.conf" || break
     west flash -d build/tag_t$i --dev-id "${!serial_var}" || break
 done
 ```
@@ -1070,7 +1078,7 @@ Montagem de 8 âncoras do M9. A tag passa a consultar 8 âncoras (opção
 válida só depois da mudança de protocolo do M10):
 
 ```bash
-west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag8 -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=8 -DEXTRA_CONF_FILE=nodes/t1.conf
+west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag8 -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=8 "-DEXTRA_CONF_FILE=nodes/t1.conf"
 west flash -d build/tag8 --dev-id $T1
 ```
 
@@ -1140,13 +1148,13 @@ firmware do M11, que atende os dois modos. Use o laço da
 
 | Build | Pasta | Comando |
 |-------|-------|---------|
-| DS + modo sombra | `build/tag_shadow` | `west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag_shadow -- -DEXTRA_CONF_FILE=nodes/t1.conf -DCONFIG_RTLS_TWR_SS_SHADOW=y` |
+| DS + modo sombra | `build/tag_shadow` | `west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag_shadow -- "-DEXTRA_CONF_FILE=nodes/t1.conf" -DCONFIG_RTLS_TWR_SS_SHADOW=y` |
 | DS + sombra, 1 âncora | `build/tag_shadow1` | idem, com `-DCONFIG_RTLS_TAG_NUM_ANCHORS=1` |
-| SS | `build/tag_ss` | `west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag_ss -- -DEXTRA_CONF_FILE=nodes/t1.conf -DCONFIG_RTLS_TWR_MODE_SS=y` |
+| SS | `build/tag_ss` | `west build -p always -b decawave_dwm1001_dev apps/tag -d build/tag_ss -- "-DEXTRA_CONF_FILE=nodes/t1.conf" -DCONFIG_RTLS_TWR_MODE_SS=y` |
 | SS, 1 âncora | `build/tag_ss1` | idem, com `-DCONFIG_RTLS_TAG_NUM_ANCHORS=1` |
 | SS, só portadora | `build/tag_ss_car` | `tag_ss` + `-DCONFIG_RTLS_TWR_SS_OFS_SRC_CARRIER=y` |
 | SS, só timestamps | `build/tag_ss_ts` | `tag_ss` + `-DCONFIG_RTLS_TWR_SS_OFS_SRC_TIMESTAMPS=y` |
-| A1 respondendo no slot 3 | `build/anchor_a1_s3` | `west build -p always -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1_s3 -- -DEXTRA_CONF_FILE=nodes/a1.conf -DCONFIG_RTLS_NODE_ID=0xA004` |
+| A1 respondendo no slot 3 | `build/anchor_a1_s3` | `west build -p always -b decawave_dwm1001_dev apps/anchor -d build/anchor_a1_s3 -- "-DEXTRA_CONF_FILE=nodes/a1.conf" -DCONFIG_RTLS_NODE_ID=0xA004` |
 
 - Trocar de modo é regravar **só a tag**: `west flash -d build/tag_ss --dev-id $T1`.
 - O `anchor_a1_s3` mantém a posição e os atrasos da placa A1, mas responde

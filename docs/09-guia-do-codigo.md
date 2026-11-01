@@ -543,7 +543,7 @@ flowchart LR
 Da esquerda para a direita, cada fonte sobrescreve a anterior. Exemplos:
 
 ```bash
-west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a2 -- -DEXTRA_CONF_FILE=nodes/a2.conf
+west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a2 -- "-DEXTRA_CONF_FILE=nodes/a2.conf"
 west build -b decawave_dwm1001_dev apps/tag -d build/tag -- -DCONFIG_RTLS_TAG_NUM_ANCHORS=3
 west build -d build/tag -t menuconfig
 ```

@@ -198,7 +198,7 @@ de µs, bem abaixo do `T_reply` de 1 ms.
 **Configuração por nó:** cada âncora usa um fragmento em `apps/anchor/nodes/`:
 
 ```
-west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a2 -- -DEXTRA_CONF_FILE=nodes/a2.conf
+west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a2 -- "-DEXTRA_CONF_FILE=nodes/a2.conf"
 ```
 
 ## 7. Endereçamento
