@@ -2,9 +2,11 @@
 """Ferramentas de bancada do RTLS (docs/07-bancada.md).
 
 Subcomandos:
-  capture  lê a UART da tag e grava as linhas "R,..." em CSV (e as "L,..." em <out>_pos.csv)
+  capture  lê a UART e grava "R,..." em <out>, "L,..." em <out>_pos.csv e
+           "P,..." (gateway) em <out>_gw.csv
   stats    estatísticas por âncora (taxa de sucesso, média, desvio, potência)
   pos      estatísticas das posições do EKF (dispersão, RMSE, CEP50/95)
+  gw       entrega das posições no gateway (lacunas de round, potência)
   calib    viés e ajuste do atraso de antena com um par de placas iguais
   calib3   ajuste individual do atraso de antena com três placas (APS014)
 
@@ -31,6 +33,15 @@ POS_RE = re.compile(
 )
 POS_FIELDS = ["round", "t_ms", "x_mm", "y_mm", "z_mm", "sx_mm", "sy_mm", "sz_mm", "n_ranges",
               "flags"]
+# POSITION recebido no gateway: P,tag,round,t_ms,x,y,z,sx,sy,sz,n,flags,rx_cdbm,fp_cdbm,gw_ms.
+GW_RE = re.compile(
+    r"(?<![A-Za-z])P,([0-9a-fA-F]{4}),(\d+),(\d+),(-?\d+),(-?\d+),(-?\d+),(\d+),(\d+),(\d+),"
+    r"(\d+),(\d+),(-?\d+),(-?\d+),(\d+)"
+)
+GW_FIELDS = ["tag", "round", "t_ms", "x_mm", "y_mm", "z_mm", "sx_mm", "sy_mm", "sz_mm",
+             "n_ranges", "flags", "rx_power_cdbm", "fp_power_cdbm", "gw_ms"]
+# Colunas que ficam como texto (IDs em hexadecimal).
+TEXT_FIELDS = ("anchor", "tag")
 # RTLS_POS_FLAG_* (include/rtls/frames.h)
 FLAG_INIT = 1 << 1
 FLAG_OUTLIER = 1 << 2
@@ -64,16 +75,30 @@ def parse_pos(line):
     return dict(zip(POS_FIELDS, (int(v) for v in match.groups())))
 
 
-def pos_path(out):
+def parse_gw(line):
+    match = GW_RE.search(line)
+    if not match:
+        return None
+    values = match.groups()
+    row = dict(zip(GW_FIELDS[1:], (int(v) for v in values[1:])))
+    row["tag"] = values[0].lower()
+    return row
+
+
+def sibling_path(out, suffix):
     out = Path(out)
-    return out.with_name(f"{out.stem}_pos{out.suffix or '.csv'}")
+    return out.with_name(f"{out.stem}{suffix}{out.suffix or '.csv'}")
+
+
+def pos_path(out):
+    return sibling_path(out, "_pos")
 
 
 def load(path):
     with open(path, newline="") as f:
         return [
             {
-                k: (v if k == "anchor" else int(v) if v not in (None, "") else None)
+                k: (v if k in TEXT_FIELDS else int(v) if v not in (None, "") else None)
                 for k, v in row.items()
             }
             for row in csv.DictReader(f)
@@ -110,44 +135,49 @@ def cmd_capture(args):
     except ImportError:
         sys.exit("pyserial não encontrado: ative o venv (scripts/env.*) ou pip install pyserial")
 
-    count = 0
-    pos_count = 0
-    pos_file = None
-    pos_writer = None
+    # Cada tipo de linha vai para o seu arquivo, criado só quando aparece a
+    # primeira linha dele: a tag gera R e L; o gateway, P.
+    sinks = [
+        {"parse": parse_line, "path": Path(args.out), "fields": FIELDS, "what": "distâncias"},
+        {"parse": parse_pos, "path": pos_path(args.out), "fields": POS_FIELDS,
+         "what": "posições da tag"},
+        {"parse": parse_gw, "path": sibling_path(args.out, "_gw"), "fields": GW_FIELDS,
+         "what": "posições no gateway"},
+    ]
+    for sink in sinks:
+        sink.update(file=None, writer=None, count=0)
+
     deadline = time.monotonic() + args.seconds if args.seconds else None
-    with serial.Serial(args.port, args.baud, timeout=1) as port, open(
-        args.out, "w", newline=""
-    ) as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDS)
-        writer.writeheader()
+    with serial.Serial(args.port, args.baud, timeout=1) as port:
         print(f"Capturando {args.port} -> {args.out} (Ctrl+C para parar)")
         try:
             while deadline is None or time.monotonic() < deadline:
                 line = port.readline().decode(errors="replace")
                 if args.echo and line:
                     print(line, end="")
-                row = parse_line(line)
-                if row:
-                    writer.writerow(row)
-                    count += 1
-                    continue
-                pos = parse_pos(line)
-                if pos:
-                    # o arquivo de posições só é criado se o firmware as imprimir
-                    if pos_writer is None:
-                        pos_file = open(pos_path(args.out), "w", newline="")
-                        pos_writer = csv.DictWriter(pos_file, fieldnames=POS_FIELDS)
-                        pos_writer.writeheader()
-                    pos_writer.writerow(pos)
-                    pos_count += 1
+                for sink in sinks:
+                    row = sink["parse"](line)
+                    if not row:
+                        continue
+                    if sink["writer"] is None:
+                        sink["file"] = open(sink["path"], "w", newline="")
+                        sink["writer"] = csv.DictWriter(sink["file"], fieldnames=sink["fields"])
+                        sink["writer"].writeheader()
+                    sink["writer"].writerow(row)
+                    sink["count"] += 1
+                    break
         except KeyboardInterrupt:
             pass
         finally:
-            if pos_file:
-                pos_file.close()
-    print(f"{count} distâncias gravadas em {args.out}")
-    if pos_count:
-        print(f"{pos_count} posições gravadas em {pos_path(args.out)}")
+            for sink in sinks:
+                if sink["file"]:
+                    sink["file"].close()
+
+    written = [sink for sink in sinks if sink["count"]]
+    for sink in written:
+        print(f"{sink['count']} {sink['what']} gravadas em {sink['path']}")
+    if not written:
+        print("nenhuma linha R, L ou P recebida: confira a porta e o firmware (--echo mostra tudo)")
 
 
 def cmd_stats(args):
@@ -190,8 +220,23 @@ def percentile(sorted_values, p):
     return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * (k - lo)
 
 
+def select_tag(rows, tag, path):
+    """No CSV do gateway (coluna tag), fica só com uma tag."""
+    if not rows or "tag" not in rows[0]:
+        return rows
+    tags = sorted({r["tag"] for r in rows})
+    if tag:
+        tag = tag.lower().removeprefix("0x")
+        if tag not in tags:
+            sys.exit(f"{path}: tag {tag} não encontrada ({', '.join(tags)})")
+        return [r for r in rows if r["tag"] == tag]
+    if len(tags) != 1:
+        sys.exit(f"{path}: várias tags ({', '.join(tags)}); use --tag")
+    return rows
+
+
 def cmd_pos(args):
-    rows = load(args.csv)[args.skip:]
+    rows = select_tag(load(args.csv), args.tag, args.csv)[args.skip:]
     if not rows:
         sys.exit("CSV vazio")
 
@@ -231,6 +276,65 @@ def cmd_pos(args):
                 + (r["z_mm"] - truth[2]) ** 2 for r in rows
             ) ** 0.5
             print(f"RMSE 3D {rmse_3d:.1f} mm")
+
+
+def round_gaps(rows):
+    """Mesma regra de rtls_round_tracker_update() (lib/proto/frames.c).
+
+    Devolve (rodadas sem POSITION, repetidos, reinícios da tag).
+    """
+    lost = dup = restarts = 0
+    last = None
+    for r in rows:
+        if last is not None:
+            if r["t_ms"] == last["t_ms"]:
+                dup += 1
+                continue
+            if r["t_ms"] > last["t_ms"]:
+                lost += (r["round"] - last["round"] - 1) % 256
+            else:
+                restarts += 1
+        last = r
+    return lost, dup, restarts
+
+
+def cmd_gw(args):
+    rows = load(args.csv)
+    if not rows:
+        sys.exit("CSV vazio")
+
+    sent = None
+    if args.sent:
+        sent = {r["t_ms"] for r in load(args.sent)}
+
+    print(f"{'tag':>5} {'n':>6} {'s':>7} {'Hz':>6} {'lacunas':>8} {'recebidas':>10} "
+          f"{'maior int.':>10} {'RX dBm':>7} {'1º cam.':>7}")
+    for tag in sorted({r["tag"] for r in rows}):
+        group = [r for r in rows if r["tag"] == tag]
+        lost, dup, restarts = round_gaps(group)
+        n = len(group) - dup
+        span_s = (group[-1]["gw_ms"] - group[0]["gw_ms"]) / 1000.0
+        rate = (n - 1) / span_s if span_s > 0 else 0.0
+        gaps = [b["gw_ms"] - a["gw_ms"] for a, b in zip(group, group[1:])]
+        rx = statistics.fmean(r["rx_power_cdbm"] for r in group) / 100.0
+        fp = statistics.fmean(r["fp_power_cdbm"] for r in group) / 100.0
+        print(f"{tag:>5} {n:>6} {span_s:>7.1f} {rate:>6.2f} {lost:>8} "
+              f"{100.0 * n / (n + lost):>9.2f}% {max(gaps, default=0):>8} ms "
+              f"{rx:>7.1f} {fp:>7.1f}")
+        if dup or restarts:
+            print(f"{'':>5} {dup} repetidos, {restarts} reinícios da tag")
+
+    if sent is not None:
+        tags = sorted({r["tag"] for r in rows})
+        if len(tags) != 1:
+            sys.exit("--sent compara com uma tag só: capture o gateway com uma tag ligada")
+        got = {r["t_ms"] for r in rows}
+        # só conta o trecho em que as duas capturas se sobrepõem
+        lo, hi = min(got), max(got)
+        window = {t for t in sent if lo <= t <= hi}
+        delivered = len(window & got)
+        print(f"enviadas pela tag no trecho comum: {len(window)}, recebidas: {delivered} "
+              f"({100.0 * delivered / len(window) if window else 0.0:.2f}%)")
 
 
 def print_delays(label, current_tx, current_rx, delta_ticks):
@@ -289,11 +393,18 @@ def main():
     p.add_argument("--true-distance", type=float, help="distância real (m) para o viés")
     p.set_defaults(func=cmd_stats)
 
-    p = sub.add_parser("pos", help="estatísticas das posições do EKF (<captura>_pos.csv)")
+    p = sub.add_parser("pos", help="estatísticas das posições (<captura>_pos.csv ou _gw.csv)")
     p.add_argument("csv")
     p.add_argument("--true-pos", help="posição real x,y[,z] em metros, para viés/RMSE/CEP")
     p.add_argument("--skip", type=int, default=0, help="descarta as primeiras N posições")
+    p.add_argument("--tag", help="ID da tag, se o CSV do gateway tiver várias")
     p.set_defaults(func=cmd_pos)
+
+    p = sub.add_parser("gw", help="entrega das posições no gateway (<captura>_gw.csv)")
+    p.add_argument("csv")
+    p.add_argument("--sent", help="<captura>_pos.csv da tag, gravado ao mesmo tempo: "
+                   "compara enviadas x recebidas pelo t_ms")
+    p.set_defaults(func=cmd_gw)
 
     for name, func, helptext in (
         ("calib", cmd_calib, "ajuste com um par de placas iguais"),
