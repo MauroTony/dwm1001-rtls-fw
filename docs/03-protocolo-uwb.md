@@ -419,8 +419,13 @@ segue o `settings` do M8):
 | `0x0406` | `twr/mode` (0 DS, 1 SS) | `RTLS_TWR_MODE_SS` (M11) | tag | imediata |
 | `0x0501` / `0x0502` | `tag/anchor_base`, `tag/num_anchors` | `RTLS_TAG_ANCHOR_BASE_ID`, `RTLS_TAG_NUM_ANCHORS` | tag | imediata |
 | `0x0601`–`0x0605` | `loc/mode_3d`, `loc/tag_height_mm`, `loc/range_std_mm`, `loc/accel_std_mms2`, `loc/gate_chi2_x100` | `RTLS_LOC_*` | tag | imediata (`mode_3d` reinicia o EKF) |
+| `0x0606` | `loc/nlos_weight` | `RTLS_LOC_NLOS_WEIGHTING` (M8) | tag | imediata (reinicia o EKF) |
 | `0xF001`–`0xF003` | `info/fw_version`, `info/uptime_s`, `info/late_tx` | — | todos | só leitura |
 
+- **Já implementado no M8** (`lib/config`, shell e NVS): `0x0101`, `0x0102`,
+  `0x0201`–`0x0203`, `0x0301`–`0x0302`, `0x0501`–`0x0502` e
+  `0x0601`–`0x0606`. Os tempos do DS-TWR, a correção por RSL, o modo SS e as
+  chaves `0xF00x` dependem do M11/M12.
 - **Fora do registro:**
   - a PHY, porque o driver só aceita canal 5 / PRF 64 / 128 / 6,8 Mbps;
   - a potência de TX, porque o valor *smart* atual está amarrado à regra

@@ -45,7 +45,7 @@ flowchart LR
 | M5 Tag → gateway | 🧪 | lacunas de `round` (T5.0) | entrega das posições | 6 |
 | M6 SPI → host | 🧪 | codec TLV, CRC (T6.0) | host lendo a tabela | 6 + host |
 | M7 Multi-tag (TDMA) | 🧪 | superquadro (T7.0) | 4 tags simultâneas | 9 |
-| M8 Robustez e avaliação | 📐 | — | campanha do TCC | todas |
+| M8 Robustez e avaliação | 🧪 | registro (T8.0), NLOS (T8.6) | campanha do TCC | todas |
 | M9 Descoberta e seleção de âncoras *(opcional)* | 📐 | seleção e tabela (ztest) | 8 âncoras, movimento entre zonas | 10 |
 | M10 Até 8 âncoras + FDE *(opcional)* | 📐 | FDE com falhas sintéticas | NLOS controlado | 10 |
 | M11 SS-TWR por *flag* *(opcional)* | 📐 | SS-TWR, desvio, previsão do TX | modo sombra, SS × DS | 5–6 |
@@ -242,7 +242,16 @@ python -m serial.tools.miniterm /dev/ttyACM0 115200    # Linux
 ```
 <inf> rtls_dw1000: DW1000 DEV_ID 0xdeca0130 part 0x........ xtal 16 ldo 0x.. otp_antdly 0x........
 <inf> rtls_dw1000: PHY: canal 5, PRF 64 MHz, preambulo 128 (codigo 9), 6800 kbps, PAN 0xdeca, addr 0x....
+<inf> rtls_config: config: 12 parametros, 0 salvos na NVS
+<inf> rtls_wdt: reset anterior: software (rtls reboot ou J-Link)
+<inf> rtls_wdt: watchdog: 3000 ms
+uart:~$
 ```
+
+A partir do M8 o console é um **shell**: o prompt `uart:~$` aparece entre os
+logs e aceita os comandos `rtls ...` ([M8](#11-m8--robustez-configuração-e-avaliação-)).
+O número de parâmetros muda com o papel: 12 na tag, 7 na âncora e 4 no
+gateway.
 
 | Nó | Linha própria do boot | Depois |
 |----|-----------------------|--------|
@@ -286,8 +295,13 @@ python tools/rtls_log.py stats captures/T2.2_5m.csv --true-distance 5.0
 | `média mm` / `bruta mm` | média corrigida pelo viés de RSL / antes da correção |
 | `desvio` | desvio-padrão (mm) |
 | `mín` / `máx` | extremos; *outliers* aparecem aqui |
-| `RX dBm` / `1º cam.` | potência total e do primeiro caminho |
+| `RX dBm` / `1º cam.` | potência total do RESP na tag / primeiro caminho do FINAL na âncora |
+| `NLOS dB` / `>6 dB` | só com a 9ª coluna (M8): média de $P_{RX} - P_{FP}$ do **mesmo** RESP e fração acima de 6 dB (suspeita de NLOS) |
 | `viés` | média − distância real (só com `--true-distance`), em mm e em ticks |
+
+A linha `R,...` ganhou no M8 a 9ª coluna `resp_fp_cdbm`, a potência do
+primeiro caminho do RESP na tag. O `rtls_log.py` aceita CSVs com 7, 8 ou 9
+colunas.
 
 **Posições (a partir do M4).** Se a tag imprimir linhas `L,...`, o
 `capture` grava também `<arquivo>_pos.csv` ao lado do CSV de distâncias. O
@@ -1042,7 +1056,7 @@ Um console por tag para acompanhar os resumos. No boot, a tag mostra
 
 ---
 
-## 11. M8 — Robustez, configuração e avaliação 📐
+## 11. M8 — Robustez, configuração e avaliação 🧪
 
 **Objetivo:** sistema configurável sem recompilar, estável por horas e
 avaliado para o TCC.
@@ -1050,9 +1064,16 @@ avaliado para o TCC.
 
 ### Implementação
 
-- [ ] `settings` + NVS + shell: ID, posição da âncora, atrasos de antena
-- [ ] watchdog
-- [ ] indicador de NLOS ($P_{RX} - P_{FP}$)
+- [x] `settings` + NVS + shell: registro de parâmetros com as chaves do M12 (ID, PAN, posição da âncora, atrasos de antena, âncoras da tag, EKF)
+- [x] watchdog da thread `main` e causa do reset no boot
+- [x] indicador de NLOS ($P_{RX} - P_{FP}$ do RESP, 9ª coluna do CSV) e ponderação opcional no EKF (`RTLS_LOC_NLOS_WEIGHTING`)
+
+### Testes automatizados
+
+| ID | Caso | Esperado |
+|----|------|----------|
+| T8.0 | registro (ztest, suíte `config`): busca por nome e chave, faixas, tabela consistente | todos aprovados |
+| T8.6 | NLOS (ztest, suíte `loc`): rampa do fator; +12 cm numa âncora com indicador de 12 dB, com e sem ponderação | RMSE com ponderação < 0,8 × sem |
 
 ### Preparação da bancada
 
@@ -1065,26 +1086,57 @@ west flash -d build/anchor_a1 --dev-id $A1 --erase   # só na 1ª vez do M8
 python -m serial.tools.miniterm <COM de A1> 115200   # o shell abre no mesmo console
 ```
 
-Os comandos do shell (ID, posição, atrasos) serão definidos no M8 e
-documentados aqui.
+> [!WARNING]
+> O valor salvo na NVS vence o do build. Regravar com outro
+> `nodes/aN.conf` não muda ID nem posição já salvos: use `rtls reset all`
+> ou grave com `--erase`.
+
+**Comandos do shell** (no mesmo console):
+
+| Comando | Exemplo | Efeito |
+|---------|---------|--------|
+| `rtls show` | `rtls show` | lista chave, nome, valor, origem (NVS ou padrão) e classe |
+| `rtls get` | `rtls get anchor/pos_z_mm` | um parâmetro (nome ou `0xchave`) |
+| `rtls set` | `rtls set anchor/pos_z_mm 2500` | grava na NVS; imediato ou "vale depois de `rtls reboot`" |
+| `rtls reset` | `rtls reset all` | apaga da NVS, volta ao Kconfig |
+| `rtls reboot` | `rtls reboot` | reinicia o nó |
+| `rtls hang` | `rtls hang` | trava a `main` para o T8.2 |
+
+A lista completa de parâmetros e classes está em
+[09 §4.13](09-guia-do-codigo.md#413-registro-de-parâmetros-shell-e-nvs).
 
 ### Roteiro de bancada
 
 | ID | Passo | Esperado |
 |----|-------|----------|
-| T8.1 | Mude a posição de uma âncora pelo shell e reinicie | o valor persiste após o reset |
-| T8.2 | Force um travamento (comando de teste) | o watchdog reinicia e o nó volta à rede |
+| T8.1 | `rtls set anchor/pos_z_mm 2500` e `rtls reboot` | no boot, `RTLS ancora ... em (..., ..., 2500) mm`; `rtls show` mostra `(NVS, imediato)` |
+| T8.2 | `rtls hang` | ~3 s depois o nó reinicia; o boot mostra `reset anterior: WATCHDOG` e ele volta à rede |
+
+Resultado numa placa (01/11/2026, âncora A1, sem rádio parceiro): T8.1 e
+T8.2 aprovados. A faixa foi conferida (`node/pan 0xFFFF` recusado), a
+posição foi aplicada na hora, o `node/id` só valeu depois do reboot, e o
+`rtls reset all` voltou tudo ao padrão. O T8.1 completo, com a tag lendo a
+posição nova no REPORT, fica para a bancada.
 | T8.3 | 1 h de operação contínua com todos os nós | nenhum reset; estatísticas estáveis |
-| T8.4 | Obstáculo/pessoa entre tag e uma âncora | viés e taxa de rejeição registrados (E8) |
+| T8.4 | Obstáculo/pessoa entre tag e uma âncora, com `rtls set loc/nlos_weight 0` e depois `1` | `stats`: `NLOS dB` e `>6 dB` da âncora obstruída sobem; `pos`: RMSE com e sem ponderação (E8) |
 | T8.5 | Campanha experimental E5–E8 | dataset completo e gráficos |
 
 ```bash
-# T8.1: depois do comando de shell, reinicie e confira o boot
-west reset -d build/anchor_a1 --dev-id $A1
+# T8.1 e T8.2: comandos no console da âncora (miniterm), não no terminal do west
+#   uart:~$ rtls set anchor/pos_z_mm 2500
+#   uart:~$ rtls reboot
+#   uart:~$ rtls hang
 
 # T8.3: 1 h de captura na tag, com os resumos na tela
 python tools/rtls_log.py capture --port <COM de T1> --out captures/T8.3_1h.csv --seconds 3600 --echo
 python tools/rtls_log.py stats captures/T8.3_1h.csv
+# no fim, o capture avisa se o firmware descartou linhas do log
+
+# T8.4: mesma posição, ponderação desligada e ligada pelo shell da tag
+python tools/rtls_log.py capture --port <COM de T1> --out captures/T8.4_nlos_off.csv --seconds 120
+python tools/rtls_log.py capture --port <COM de T1> --out captures/T8.4_nlos_on.csv --seconds 120
+python tools/rtls_log.py stats captures/T8.4_nlos_off.csv
+python tools/rtls_log.py pos captures/T8.4_nlos_on_pos.csv --true-pos <x>,<y> --skip 10
 ```
 
 ### Critério de aceite

@@ -26,7 +26,7 @@ a placa **Qorvo/Decawave DWM1001-DEV** (nRF52832 + DW1000), sobre o
 | M5: posição tag → gateway | implementado: CSV no gateway, lacunas por tag e `rtls_log.py gw`; validar a entrega em bancada (≥ 99 %) |
 | M6: SPI → host | implementado: codec com CRC testado, thread SPIS + DRDY, tags simuladas para teste; validar com um host real |
 | M7: TDMA | implementado: BEACON do gateway e slots por ID na tag (opções `RTLS_GATEWAY_BEACON` e `RTLS_TAG_TDMA`); validar com 2 a 4 tags |
-| M8 | pendente |
+| M8: robustez | implementado: parâmetros na NVS pelo shell (`rtls set`), watchdog, indicador de NLOS e ponderação opcional no EKF; falta a campanha experimental |
 | M9 e M10 (opcionais) | se houver tempo: descoberta e seleção de âncoras; até 8 âncoras por rodada com detecção de NLOS por redundância |
 | M11 e M12 (opcionais) | se houver tempo: modo SS-TWR escolhido por *flag*, com compensação do desvio de relógio; configuração remota de tags e âncoras pelo host, via gateway |
 

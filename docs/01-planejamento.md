@@ -171,7 +171,7 @@ existir, o modo SS/DS vira mais um parâmetro remoto.
 | M5 | implementado (CSV `P,...` e lacunas no gateway, `rtls_log.py gw`, T5.0); falta a bancada (T5.1–T5.4) |
 | M6 | implementado (codec com T6.0 aprovado, thread SPIS + DRDY, tags simuladas); falta o host de referência e a bancada (T6.1–T6.7) |
 | M7 | implementado (BEACON, sincronismo pelo `RX_TIME`, slots por ID, T7.0); falta a bancada (T7.1–T7.5) |
-| M8 | pendente |
+| M8 | implementado (registro de parâmetros com NVS e shell, watchdog, indicador e ponderação de NLOS, T8.0 e T8.6); falta a bancada (T8.1–T8.5) e a campanha |
 | M9 a M12 | opcionais, no fim do projeto se houver tempo |
 
 ### M0 — Ambiente e estrutura base · ~1 semana

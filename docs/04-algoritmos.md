@@ -377,6 +377,40 @@ altura:
 | T4.7 | NEES médio em 100 execuções | ≈ 4 | 4,18 |
 | T4.13 | salto de 2,8 m | reinicia | reinicia em até 7 rodadas |
 
+### 5.8 Ponderação por NLOS (M8, opcional)
+
+Com `RTLS_LOC_NLOS_WEIGHTING` (ou `rtls set loc/nlos_weight 1`), a
+variância de cada distância cresce com o indicador de NLOS do **mesmo**
+RESP, medido na tag:
+
+$$
+\Delta P = P_{RX} - P_{FP},
+\qquad
+R = \sigma_r^2 \cdot
+\begin{cases}
+1 & \Delta P \le L \\
+1 + (G - 1)\dfrac{\Delta P - L}{N - L} & L < \Delta P < N \\
+G & \Delta P \ge N
+\end{cases}
+$$
+
+| Símbolo | Valor padrão | Kconfig |
+|---------|--------------|---------|
+| $L$ (limiar de LOS) | 6 dB | `RTLS_LOC_NLOS_LOS_DB_X10` |
+| $N$ (limiar de NLOS) | 10 dB | `RTLS_LOC_NLOS_NLOS_DB_X10` |
+| $G$ (fator máximo da variância) | 9 (σ × 3) | `RTLS_LOC_NLOS_VAR_GAIN_X10` |
+
+- O gating usa o $S$ com esse $R$: a medida suspeita pesa menos, em vez de
+  ser rejeitada por salto.
+- Sem as duas potências (CSV antigo, simulação), o fator é 1.
+- **Resultado em simulação (T8.6):** +12 cm de viés numa âncora com
+  $\Delta P$ = 12 dB, abaixo do que o gating rejeita. O teste exige RMSE com
+  ponderação menor que 0,8 × o sem; o espelho em Python dá ~41 mm contra
+  ~71 mm.
+- **Limitação:** quando o DW1000 toma um reflexo forte por primeiro caminho,
+  $\Delta P$ cai e a medida parece LOS (visto na captura do T2.2). A
+  ponderação não pega esse caso; o gating e a redundância (M10) pegam.
+
 ## 6. Saída e indicadores de qualidade
 
 O `struct rtls_position` leva posição, velocidade e

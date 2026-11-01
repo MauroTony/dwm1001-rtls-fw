@@ -73,14 +73,15 @@ flowchart TB
         proto["proto<br/>frames.c · tdma.c ✅"]:::ok
         loc["loc<br/>LS · EKF · matrizes ✅"]:::ok
         hif["host_if<br/>codec ✅ · SPIS + DRDY 🧪"]:::bench
-        led["common<br/>status_led.c 🧪"]:::bench
+        led["common<br/>status_led.c · watchdog.c 🧪"]:::bench
+        cfgl["config<br/>registro ✅ · NVS + shell 🧪"]:::bench
     end
     drv["drivers/dw1000<br/>dw1000.c 🧪"]:::bench
     zep["Zephyr v4.4.0<br/>kernel · SPI · GPIO · log"]:::ext
     hw["nRF52832 + DW1000"]:::ext
-    tag --> twr & loc & proto & led & drv
-    anchor --> twr & led & drv
-    gw --> proto & hif & led & drv
+    tag --> twr & loc & proto & led & cfgl & drv
+    anchor --> twr & led & cfgl & drv
+    gw --> proto & hif & led & cfgl & drv
     twr --> math & proto & drv
     drv & hif & led --> zep --> hw
     classDef ok fill:#d4edda,stroke:#2e7d32,color:#111
@@ -133,10 +134,11 @@ flowchart TB
 | [`lib/proto`](../lib/proto) | montagem e validação de quadros | ✅ |
 | [`lib/loc`](../lib/loc) | multilateração LS + Gauss-Newton, EKF, matrizes pequenas | ✅ |
 | [`lib/host_if`](../lib/host_if) | codec do protocolo SPI (páginas, CRC) e thread SPIS + DRDY | ✅ / 🧪 |
-| [`lib/common`](../lib/common) | LEDs de status | 🧪 |
+| [`lib/common`](../lib/common) | LEDs de status e watchdog | 🧪 |
+| [`lib/config`](../lib/config) | registro de parâmetros, NVS (`settings`) e comandos `rtls` do shell | ✅ / 🧪 |
 | [`include/rtls`](../include/rtls) | headers públicos de todas as bibliotecas | — |
 | [`samples/uwb_pingpong`](../samples/uwb_pingpong) | bancada do driver (M1) | 🧪 |
-| [`tests/unit`](../tests/unit) | 40 testes ztest | ✅ |
+| [`tests/unit`](../tests/unit) | 45 testes ztest | ✅ |
 | [`tools/rtls_log.py`](../tools/rtls_log.py) | captura CSV, estatística de distâncias e posições, calibração de antena | ✅ |
 | [`scripts/`](../scripts) | setup Windows/Linux, ativação, lista de placas | ✅ |
 
@@ -151,6 +153,8 @@ flowchart TB
 | `lib/loc` | ● | | | | ● |
 | `lib/host_if` | | | ● | | ● (codec) |
 | `lib/common` (LEDs) | ● | ● | ● | ● | |
+| `lib/common` (watchdog) | ● | ● | ● | | |
+| `lib/config` | ● | ● | ● | | ● (tabela) |
 
 A seleção vem do `prj.conf` de cada app (seção [3.5](#35-kconfig-ligando-e-configurando-módulos)).
 
@@ -312,7 +316,8 @@ sequenceDiagram
 | `twr_common.c`: `twr_recv()` | recebe até chegar o tipo esperado ou vencer o prazo | initiator, responder |
 | `rtls_twr_initiator_init()` / `_run_round()` | configuração e rodada completa da tag | `apps/tag` |
 | `rtls_twr_initiator_get_stats()` | rodadas, % completas, tempo da rodada, TX atrasado, por âncora | resumo de 10 s da tag |
-| `rtls_twr_responder_init()` / `_run()` | laço infinito da âncora | `apps/anchor` |
+| `rtls_twr_responder_init()` / `_run()` | laço infinito da âncora; sem POLL, volta a cada 500 ms para o `idle_hook` | `apps/anchor` |
+| `rtls_twr_responder_set_position()` | troca a posição do REPORT (chamada no `idle_hook`) | `apps/anchor` |
 | `rtls_twr_responder_get_stats()` | POLL, RESP, FINAL, REPORT, timeouts | trabalho de 10 s da âncora |
 
 **Saída por rodada** (`struct rtls_range_set`): número da rodada, instante,
@@ -386,13 +391,64 @@ flowchart LR
 | `rtls_host_if_init()` | transporte 🧪 | confere SPIS e DRDY, guarda os dados do `INFO` e cria a thread `host_if` | `apps/gateway` |
 | `rtls_host_if_publish()` | transporte 🧪 | copia o snapshot sob mutex; avança a sequência e sobe o DRDY só se algo além do `age_ms` mudou | `publish_snapshot()` do gateway |
 
-### 2.7 LEDs de status · `lib/common/status_led.c` 🧪
+### 2.7 LEDs de status e watchdog · `lib/common/` 🧪
 
 | LED (alias) | Função | Disparo |
 |-------------|--------|---------|
 | verde (`led1`) | heartbeat: firmware vivo | `k_timer` a cada 500 ms |
 | azul (`led3`) | atividade UWB | `rtls_status_led_activity()`: rodada ok, POSITION, resumo da âncora, ping/pong |
 | vermelho (`led0`) | erro persistente | `rtls_status_led_error(true)`: falha de init |
+
+**Watchdog** (`watchdog.c`, M8): só a thread `main` alimenta. Se o laço do
+rádio travar, o nó reinicia em `CONFIG_RTLS_WATCHDOG_TIMEOUT_MS`.
+
+| Função | O que faz | Quem chama |
+|--------|-----------|------------|
+| `rtls_watchdog_init()` | registra a causa do reset anterior (`hwinfo`) e liga o WDT do nRF52 (pausado pelo depurador) | os três apps, no fim do boot |
+| `rtls_watchdog_feed()` | alimenta | a cada volta: `housekeeping()` da tag, `idle_hook()` da âncora, laço do gateway |
+| `rtls_watchdog_hang()` | teste do T8.2: a próxima alimentação trava a `main` | `rtls hang` no shell |
+
+### 2.7.1 Registro de parâmetros · `lib/config/` (tabela ✅, NVS e shell 🧪)
+
+**O que faz:** dá a cada parâmetro do nó uma chave estável (as do M12), um
+nome, uma faixa e uma classe; guarda na NVS o que for alterado pelo shell.
+**Por que existe:** reconfigurar um nó sem recompilar (M8) e, depois, pelo
+host (M12), com a mesma tabela.
+
+```mermaid
+flowchart LR
+    k["Kconfig<br/>(padrão)"]:::ok --> t["tabela<br/>config_registry.c"]:::ok
+    nvs[("NVS<br/>rtls/&lt;nome&gt;")]:::bench -- "boot: settings_load" --> v["valores<br/>config.c"]:::bench
+    t --> v
+    sh["shell: rtls set"]:::bench -- "valida, grava,<br/>marca mudança" --> v
+    v -- "rtls_config_next_change()" --> m["thread main<br/>aplica os imediatos"]:::bench
+    v --> nvs
+    classDef ok fill:#d4edda,stroke:#2e7d32,color:#111
+    classDef bench fill:#fff3cd,stroke:#b8860b,color:#111
+```
+
+| Função | O que faz |
+|--------|-----------|
+| `rtls_config_find()` / `_validate()` | parâmetro pelo nome (`loc/range_std_mm`) ou pela chave (`0x0603`); faixa e só leitura |
+| `rtls_config_init()` | padrões do Kconfig + `settings_load_subtree("rtls")` |
+| `rtls_config_get()` / `_is_saved()` | valor atual e se veio da NVS |
+| `rtls_config_set()` | valida, grava `rtls/<nome>` na NVS, marca a mudança |
+| `rtls_config_reset()` | apaga da NVS (um ou todos) e volta ao padrão |
+| `rtls_config_next_change()` | a `main` pega uma chave alterada por vez e aplica |
+
+**Comandos do shell** (mesma UART do console, `uart:~$`):
+
+| Comando | O que faz |
+|---------|-----------|
+| `rtls show` | todos os parâmetros: chave, nome, valor, origem (NVS ou padrão) e classe |
+| `rtls get <nome\|0xchave>` | um parâmetro |
+| `rtls set <nome\|0xchave> <valor>` | grava (decimal ou `0x...`); avisa quando só vale depois de reiniciar |
+| `rtls reset <nome\|0xchave\|all>` | apaga da NVS |
+| `rtls reboot` | reinicia o nó |
+| `rtls hang` | trava a `main` para testar o watchdog (T8.2) |
+
+A tabela de cada firmware só tem os parâmetros do papel dele (seção
+[4.13](#413-registro-de-parâmetros-shell-e-nvs)).
 
 ---
 
@@ -426,11 +482,18 @@ flowchart LR
 | `tdma_loop()` | TDMA (M7): espera o BEACON, roda no slot `k = id − 0x1001`, abre a janela do próximo BEACON; sem 3 BEACONs seguidos, para de transmitir |
 | `wait_beacon()` | escuta até um prazo; ignora POLL/FINAL de outras tags; sincroniza no BEACON do gateway |
 | `frame_start_us()` | instante local em que o quadro começou: `RX_TIME` × relógio atual do DW1000, sem a latência ISR → thread |
+| `housekeeping()` | a cada volta dos dois laços: watchdog, `apply_config_changes()` e resumo |
+| `apply_config_changes()` | atrasos de antena na hora; parâmetros do EKF reconstroem a configuração e reiniciam o filtro |
+| `loc_cfg_from_registry()` | configuração do EKF a partir do registro (inclui a ponderação de NLOS) |
 
 ### 2.9 Firmware da âncora · `apps/anchor/src/main.c` 🧪
 
-- **Inicialização:** monta `rtls_twr_responder_cfg` com o ID e a posição do
-  Kconfig e chama `rtls_twr_responder_run()`, que não retorna.
+- **Inicialização:** carrega o registro (NVS sobre o Kconfig), monta
+  `rtls_twr_responder_cfg` com o ID, o PAN e a posição, aplica os atrasos de
+  antena e chama `rtls_twr_responder_run()`, que não retorna.
+- **`idle_hook()`:** chamado pelo responder a cada rodada e, sem POLL, a cada
+  500 ms. Alimenta o watchdog e aplica posição e atrasos de antena alterados
+  pelo shell, na própria thread `main`.
 - **Resumo de 10 s:** feito por `stats_work` (`k_work_delayable`) na
   workqueue do sistema, sem parar o responder.
 - **Uma imagem por âncora:** `-DEXTRA_CONF_FILE=nodes/aN.conf` define ID e
@@ -484,7 +547,8 @@ Valida o driver isoladamente (M1).
 | `tdma` | 4 | slot pelo ID, período, início dos slots, BEACONs perdidos e ressincronismo, BEACON inválido (T7.0) |
 | `loc_mat` | 3 | produto, Cholesky e inversa, rejeição de matriz singular (T4.14) |
 | `host_if` | 7 | CRC com o vetor "123456789", contagem de páginas, INFO, 20 tags em 3 páginas, tabela vazia, DRDY on/off, NOP e erros (T6.0) |
-| `loc` | 10 | multilateração exata 2D/3D e degenerada; EKF parado, em reta, com *outliers*, com 2 distâncias, NEES, reinício por tempo e por salto (T4.1–T4.7, T4.12–T4.13) |
+| `loc` | 12 | multilateração exata 2D/3D e degenerada; EKF parado, em reta, com *outliers*, com 2 distâncias, NEES, reinício por tempo e por salto (T4.1–T4.7, T4.12–T4.13); fator de NLOS e viés de NLOS com e sem ponderação (T8.6) |
+| `config` | 3 | busca por nome e chave, faixas, consistência da tabela (T8.0) |
 
 A suíte `frames` também cobre o rastreador de `round` do gateway (T5.0):
 lacunas, volta em 256, repetido e reinício da tag.
@@ -569,6 +633,12 @@ flowchart LR
 | `printk` | `printk()` + `CONFIG_LOG_PRINTK` | tag, gateway | CSV na UART; formatado no buffer do log diferido, sem bloquear o rádio |
 | Devicetree | `SPI_DT_SPEC_GET`, `GPIO_DT_SPEC_GET`, `DT_CHOSEN` | `dw1000.c`, `host_if.c`, LEDs | pinos e barramentos sem número fixo no código |
 | ztest / twister | `ZTEST`, `zassert_*` | `tests/unit` | testes das bibliotecas puras |
+| Settings + NVS | `settings_load_subtree()`, `settings_save_one()`, `SETTINGS_STATIC_HANDLER_DEFINE` | `config.c` | parâmetros persistentes na partição `storage_partition` (24 KB) |
+| Shell | `SHELL_CMD_REGISTER`, `SHELL_STATIC_SUBCMD_SET_CREATE`, `shell_print()` | `config_shell.c` | comandos `rtls` na UART; o log passa pelo backend do shell |
+| Watchdog | `wdt_install_timeout()`, `wdt_setup()`, `wdt_feed()` | `watchdog.c` | reinicia o nó se a `main` travar |
+| Causa do reset | `hwinfo_get_reset_cause()` | `watchdog.c` | registra no boot se o último reset foi do watchdog (T8.2, T8.3) |
+| Reinício | `sys_reboot()` | `config_shell.c` | `rtls reboot` |
+| Atômicos | `atomic_set_bit()`, `atomic_test_and_clear_bit()` | `config.c` | máscaras de "salvo" e "mudou" entre o shell e a `main` |
 | Módulo externo | `zephyr/module.yml` | raiz | `lib/` e `drivers/` entram em qualquer app do workspace |
 
 ### 3.4 Devicetree: o hardware visto pelo código
@@ -616,7 +686,8 @@ flowchart TB
 | ISR do timer | interrupção | alterna o LED verde | `status_led.c` |
 | workqueue do sistema | cooperativa (−1) | resumo de 10 s da âncora | `apps/anchor` |
 | `host_if` | cooperativa (−1) | transações do SPIS e DRDY (gateway) | `host_if.c` |
-| `main` | preemptiva 0 | rádio: ciclo da tag / responder / RX do gateway | `apps/*` |
+| `main` | preemptiva 0 | rádio: ciclo da tag / responder / RX do gateway; aplica a configuração alterada | `apps/*` |
+| `shell` | preemptiva (padrão do Zephyr) | comandos `rtls` e saída do log (inclusive o CSV) | Zephyr + `config_shell.c` |
 | thread de log | baixa | formata e envia os logs | Zephyr |
 | idle | mínima | — | Zephyr |
 
@@ -632,7 +703,7 @@ flowchart TB
 | Configuração | Kconfig não tem ponto flutuante | grandezas inteiras com unidade no nome (`_MM`, `_US`, `_X10`) |
 | Testes | `native_sim` não roda no Windows | testes gravados na placa ou em Linux/WSL |
 | Reprodutibilidade | versão do Zephyr e dos módulos fixada | `west.yml` com `revision: v4.4.0` |
-| Memória | alocação estática; uso visível no build | tag: 54,9 KB flash / 14,8 KB RAM; gateway: 46,5 KB / 16,4 KB (cada um com 4 KB de buffer de log) |
+| Memória | alocação estática; uso visível no build | tag: 98,4 KB flash / 23,6 KB RAM; âncora: 85,9 / 18,1 KB; gateway: 88,8 / 25,1 KB (com shell, NVS e watchdog do M8) |
 
 ---
 
@@ -643,10 +714,20 @@ flowchart TB
 ```mermaid
 flowchart LR
     d["Padrão no Kconfig"] --> p["prj.conf do app"] --> e["EXTRA_CONF_FILE<br/>(nodes/aN.conf)"] --> c["-DCONFIG_...=<br/>na linha do west build"]
-    c --> f["build/APP/zephyr/.config<br/>(valor efetivo)"]
+    c --> f["build/APP/zephyr/.config<br/>(valor efetivo do build)"]
+    f --> n["NVS: rtls set no shell<br/>(valor efetivo na placa, M8)"]
 ```
 
-Da esquerda para a direita, cada fonte sobrescreve a anterior. Exemplos:
+Da esquerda para a direita, cada fonte sobrescreve a anterior. Para os
+parâmetros do registro (seção [4.13](#413-registro-de-parâmetros-shell-e-nvs)),
+o valor salvo na NVS vence o do build, mesmo depois de regravar o firmware.
+
+> [!WARNING]
+> Regravar uma âncora com outro `nodes/aN.conf` **não** muda o ID nem a
+> posição se eles estiverem salvos na NVS. Use `rtls reset all` no shell ou
+> grave com `--erase`. O `rtls show` diz a origem de cada valor.
+
+Exemplos:
 
 ```bash
 west build -b decawave_dwm1001_dev apps/anchor -d build/anchor_a2 -- "-DEXTRA_CONF_FILE=nodes/a2.conf"
@@ -708,6 +789,10 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | `RTLS_LOC_RANGE_STD_MM` | 100 (1–5000) | σ_r: ruído de distância assumido | maior suaviza, confia menos nas medidas e alarga o gating; abaixo do ruído real o filtro rejeita medidas boas e o NEES sobe |
 | `RTLS_LOC_ACCEL_STD_MMS2` | 1000 (1–100000) | σ_a: aceleração não modelada | maior responde mais rápido a manobras, com mais ruído; menor suaviza a tag parada, mas atrasa nas curvas e pode rejeitar medidas boas |
 | `RTLS_LOC_GATE_CHI2_X100` | 663 | γ do gating $\nu^2/S$ (99 % com 1 GL) | menor rejeita mais *outliers* e mais medidas boas (~1 % das boas com 6,63); também é o limiar de coerência da reinicialização ($s^2 \le \gamma\,\sigma_r^2$) |
+| `RTLS_LOC_NLOS_WEIGHTING` | `n` | aumenta a variância da distância pelo indicador $P_{RX} - P_{FP}$ do RESP (M8) | ligado, uma âncora com multipercurso pesa menos; mas um reflexo que o DW1000 toma por primeiro caminho parece LOS e não é ponderado |
+| `RTLS_LOC_NLOS_LOS_DB_X10` | 60 | até aqui, fator 1 (LOS) | menor pondera mais medidas boas |
+| `RTLS_LOC_NLOS_NLOS_DB_X10` | 100 | a partir daqui, fator máximo | precisa ser maior que o limiar de LOS (`rtls_loc_init()` recusa) |
+| `RTLS_LOC_NLOS_VAR_GAIN_X10` | 90 (10–1000) | fator máximo da variância | 90 = σ × 3; maior quase descarta a âncora suspeita, mas sem os saltos do gating |
 
 ### 4.7 Saída e diagnóstico
 
@@ -753,6 +838,10 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | `CONFIG_MAIN_STACK_SIZE=4096` | tag | buffers de quadro, conjuntos de distâncias e as matrizes do EKF (~1,2 KB no pior caminho) na pilha | reduzir arrisca estouro de pilha |
 | `CONFIG_TIMING_FUNCTIONS=y` | tag | tempo de `rtls_loc_update()` no resumo de 10 s (T4.9) | ocupa o TIMER2 do nRF52 (ou usa o DWT); desligar tira a medida |
 | `CONFIG_LOG_BUFFER_SIZE=4096` | tag, gateway | o CSV passa pelo log diferido; com 1 KB (padrão), picos descartam linhas | menor volta a perder linhas em picos; o `capture` avisa |
+| `CONFIG_FLASH`, `CONFIG_FLASH_MAP`, `CONFIG_NVS`, `CONFIG_SETTINGS` | tag, âncora, gateway | registro de parâmetros persistente (M8) | sem eles o `lib/config` não compila |
+| `CONFIG_SHELL`, `CONFIG_REBOOT` | tag, âncora, gateway | comandos `rtls` e `rtls reboot` | o log e o CSV passam a sair pelo backend do shell |
+| `CONFIG_SHELL_BACKEND_SERIAL_LOG_MESSAGE_QUEUE_SIZE=4096`, `..._TX_RING_BUFFER_SIZE=64` | tag, âncora, gateway | filas do shell para o CSV não ser descartado | menores voltam a descartar em rajadas |
+| `CONFIG_WATCHDOG` | tag, âncora, gateway | driver do WDT para o `RTLS_WATCHDOG` | — |
 | `CONFIG_LOG_MODE_DEFERRED=y` | todos | o log não bloqueia o rádio | o modo imediato bloquearia a thread do rádio durante a UART |
 | `CONFIG_SPI=y`, `CONFIG_GPIO=y` | todos | barramentos do DW1000 e LEDs | obrigatórios |
 | `CONFIG_ZTEST=y` | testes | framework de teste | — |
@@ -788,6 +877,27 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | `RTLS_TDMA_FIRST_TAG_ID` | `0x1001` | `tdma.h` | slot `k = id − 0x1001`: IDs de tag consecutivos |
 | `TDMA_BEACON_GUARD_US` | 1000 µs | `apps/tag/src/main.c` | janela de RX em volta do BEACON previsto |
 | `TDMA_SEARCH_US` | 1 s | `apps/tag/src/main.c` | janela de escuta sem sincronismo (entre elas, o resumo) |
+| `RTLS_TWR_RESPONDER_IDLE_MS` | 500 ms | `twr.h` | maior intervalo entre chamadas do `idle_hook` da âncora (watchdog e configuração) |
+| `MAX_PARAMS` | 32 | `lib/config/config.c` | um bit por parâmetro nas máscaras atômicas |
+
+### 4.13 Registro de parâmetros (shell e NVS)
+
+Valem para os três firmwares com `CONFIG_RTLS_CONFIG=y`. O padrão é o do
+Kconfig; `rtls set` grava na NVS. Chaves do M12
+([03 §8.2](03-protocolo-uwb.md#82-configuração-remota-m12)).
+
+| Chave | Nome | Papéis | Faixa | Classe |
+|-------|------|--------|-------|--------|
+| `0x0101` | `node/id` | tag, âncora (gateway: só leitura) | tag `0x1001–0x1FFF`; âncora `0xA001–0xAFFF` | reinício |
+| `0x0102` | `node/pan` | todos | `0x0000–0xFFFE` | coordenada (igual em todos; reinício) |
+| `0x0201`–`0x0203` | `anchor/pos_{x,y,z}_mm` | âncora | ± 1 000 000 | imediata |
+| `0x0301` / `0x0302` | `radio/{tx,rx}_ant_dly` | todos | 0–65535 | imediata |
+| `0x0501` / `0x0502` | `tag/anchor_base`, `tag/num_anchors` | tag | `0xA001–0xAFFF`; 1–4 | reinício |
+| `0x0601`–`0x0606` | `loc/mode_3d`, `loc/tag_height_mm`, `loc/range_std_mm`, `loc/accel_std_mms2`, `loc/gate_chi2_x100`, `loc/nlos_weight` | tag | como no Kconfig | imediata (reinicia o EKF) |
+
+Fora do registro no M8 (compilados): os tempos do DS-TWR, a correção por
+RSL, o TDMA e a taxa da tag. Mudar `REPLY_DELAY_US`/`SLOT_US` num nó só
+quebraria a rede; isso fica para a mudança coordenada do M12.
 | Versão do gateway | 0.6.0 | `apps/gateway/VERSION` | anunciada no `RTLS_INFO_GET`; suba a cada marco que mudar o protocolo |
 | `RTLS_LOC_MAX_STATES` / `RTLS_MAT_MAX` | 6 | `loc.h`, `loc_mat.h` | estado 3D [p; v]; tamanho fixo das matrizes |
 | `LOC_GN_ITERS` / `LOC_GN_STOP_M` | 3 / 0,1 mm | `loc.c` | Gauss-Newton após o LS; para antes se o passo for menor |
