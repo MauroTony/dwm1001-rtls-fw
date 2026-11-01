@@ -1,0 +1,4 @@
+zephyr_library()
+zephyr_library_sources(config_registry.c)
+zephyr_library_sources_ifdef(CONFIG_RTLS_CONFIG config.c)
+zephyr_library_sources_ifdef(CONFIG_RTLS_CONFIG_SHELL config_shell.c)

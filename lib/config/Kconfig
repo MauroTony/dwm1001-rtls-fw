@@ -1,0 +1,26 @@
+config RTLS_CONFIG_REGISTRY
+	bool "Tabela de parâmetros do nó (pura)"
+	help
+	  Chaves, nomes, faixas e classes dos parâmetros (docs/03, seção 8.2).
+	  Sem NVS nem shell: usado também pelos testes em native_sim.
+
+menuconfig RTLS_CONFIG
+	bool "Parâmetros do nó na NVS e no shell (M8)"
+	depends on SETTINGS
+	select RTLS_CONFIG_REGISTRY
+	help
+	  Os valores do Kconfig viram padrões; o que for gravado pelo shell
+	  ("rtls set") fica na NVS (subárvore "rtls/") e vale no próximo boot.
+
+if RTLS_CONFIG
+
+config RTLS_CONFIG_SHELL
+	bool "Comandos 'rtls' no shell"
+	default y
+	depends on SHELL
+
+module = RTLS_CONFIG
+module-str = rtls_config
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # RTLS_CONFIG
