@@ -115,6 +115,8 @@ CSV por par, cada um com uma única âncora:
 
 ```bash
 python tools/rtls_log.py calib3 --true-distance 5.0 --ab ab.csv --ac ac.csv --bc bc.csv
+# com a distância medida em cada par (substitui a --true-distance daquele par)
+python tools/rtls_log.py calib3 --ab ab.csv --d-ab 5.207 --ac ac.csv --d-ac 5.180 --bc bc.csv --d-bc 5.160
 ```
 
 Os comandos completos de cada captura estão no passo T2.3 de

@@ -290,7 +290,7 @@ python tools/rtls_log.py stats captures/T2.2_5m.csv --true-distance 5.0
 
 | Campo | Significado |
 |-------|-------------|
-| 1ª linha | rodadas, duração e taxa em Hz |
+| 1ª linha | rodadas, duração e taxa em Hz (rodadas ÷ intervalo do `t_ms`: uma linha que sobrou da captura anterior no começo do arquivo derruba a taxa sem mudar a média) |
 | `n` / `sucesso` | distâncias da âncora / `n` ÷ rodadas |
 | `média mm` / `bruta mm` | média corrigida pelo viés de RSL / antes da correção |
 | `desvio` | desvio-padrão (mm) |
@@ -622,7 +622,16 @@ python tools/rtls_log.py capture --port <COM de B> --out captures/T2.3_bc.csv --
 # cálculo: uma linha por placa, com os dois valores do Kconfig
 python tools/rtls_log.py calib3 --true-distance 5.0 --ab captures/T2.3_ab.csv --ac captures/T2.3_ac.csv --bc captures/T2.3_bc.csv
 #   placa A: delta +12.0 ticks -> CONFIG_RTLS_DW1000_TX_ANT_DLY=16442  CONFIG_RTLS_DW1000_RX_ANT_DLY=16442
+
+# se cada par ficou a uma distância diferente, passe a medida de cada um
+python tools/rtls_log.py calib3 --ab captures/T2.3_ab.csv --d-ab 5.207 --ac captures/T2.3_ac.csv --d-ac 5.180 --bc captures/T2.3_bc.csv --d-bc 5.160
 ```
+
+> [!IMPORTANT]
+> Use a distância **medida em cada par**, e não o 5,0 m nominal. Cada 1 cm
+> de erro em $d_{XY}$ vira ~2 ticks no viés do par e se espalha pelas três
+> placas. Com 5,0 m no lugar de 5,16–5,21 m, os atrasos saem 40–50 ticks
+> maiores.
 
 Atalho com só duas placas: `calib` sobre o T2.2 (supõe as duas iguais).
 Se as placas já tiverem atrasos diferentes do padrão, passe os atuais em
