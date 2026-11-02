@@ -34,7 +34,7 @@ jobs:
           west init -l dwm1001-rtls-fw
           west update --narrow -o=--depth=1
           west zephyr-export
-          west packages pip --install
+          west packages pip --install --ignore-venv-check
 
       - name: Zephyr SDK (só ARM)
         working-directory: zephyr
