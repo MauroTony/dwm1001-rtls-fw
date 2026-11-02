@@ -408,6 +408,15 @@ rádio travar, o nó reinicia em `CONFIG_RTLS_WATCHDOG_TIMEOUT_MS`.
 | `rtls_watchdog_feed()` | alimenta | a cada volta: `housekeeping()` da tag, `idle_hook()` da âncora, laço do gateway |
 | `rtls_watchdog_hang()` | teste do T8.2: a próxima alimentação trava a `main` | `rtls hang` no shell |
 
+**GPIO de debug** (`debug_gpio.c`, `CONFIG_RTLS_DEBUG_GPIO`): pino
+`zephyr,user/debug-gpios` (P0.15, pino 3 do conector RPi) para o analisador
+lógico. Desligado, as funções viram *stubs* vazios no header.
+
+| Função | Tag | Gateway |
+|--------|-----|---------|
+| `rtls_debug_gpio_set()` | alto do POLL ao POSITION (`run_cycle()`): tempo de rodada (M3) | — |
+| `rtls_debug_gpio_pulse()` | — | pulso a cada POSITION recebido: latência POLL → gateway (T5.2) |
+
 ### 2.7.1 Registro de parâmetros · `lib/config/` (tabela ✅, NVS e shell 🧪)
 
 **O que faz:** dá a cada parâmetro do nó uma chave estável (as do M12), um
@@ -571,6 +580,9 @@ flowchart LR
     gcsv -->|pos --tag| ps
     gcsv -->|gw| gs["recebidas · lacunas · maior intervalo<br/>potência · entrega (--sent)"]
     pcsv -.->|--sent| gs
+    csv -->|replay| rp[("posições do LS/EKF<br/>no PC (rtls_loc.py)")]
+    rp -->|pos| ps
+    pcsv -.->|--compare| rp
     csv -->|calib| c1["Δ atraso de antena<br/>(par igual)"]
     csv -->|calib3| c3["Δ por placa<br/>(3 placas)"]
 ```
@@ -580,6 +592,8 @@ flowchart LR
 | `scripts/setup/setup-windows.ps1`, `setup-linux.sh` | instalam o ambiente completo (west, Zephyr, SDK) |
 | `scripts/env.ps1`, `env.sh` | ativam o venv e o J-Link num terminal novo e definem `ZEPHYR_SDK_INSTALL_DIR` (o CMake acha o SDK sem o registro de pacotes) |
 | `scripts/list-boards.ps1`, `.sh` | porta serial × serial do J-Link de cada placa |
+| `tools/rtls_loc.py` | *port* em Python de `lib/loc` (LS, Gauss-Newton, EKF, reinício, NLOS) usado pelo `rtls_log.py replay` (T4.8, E7) |
+| `.github/workflows/ci.yml` | CI no GitHub Actions: compila os 14 firmwares e variantes com warnings como erro e roda os testes em `native_sim/native/64` |
 
 ---
 
@@ -800,6 +814,7 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 |-----------|--------|-----------|--------------------|
 | `RTLS_TAG_CSV_OUTPUT` | `y` | linhas `R,...` (distâncias) e `L,...` (posição) na UART | não bloqueia o rádio (log diferido), mas ocupa ~20 ms de UART por ciclo com 4 âncoras: acima de ~30 Hz a UART não dá conta e o log descarta linhas |
 | `RTLS_TAG_STATS_PERIOD_S` | 10 (0 desliga) | resumo do TWR e do EKF na tag | menor dá mais detalhe; os contadores e o máximo do tempo do EKF zeram a cada resumo |
+| `RTLS_DEBUG_GPIO` | `n` | pino de debug para o analisador lógico (tag e gateway) | só instrumentação; ligado, o P0.15 do conector RPi fica ocupado |
 | `RTLS_TAG_TDMA` | `n` | a tag só transmite no próprio slot do superquadro (M7) | sem gateway com BEACON a tag fica muda; o `RTLS_TAG_UPDATE_RATE_HZ` deixa de valer (o período vem do BEACON). Desligado nas bancadas do M2 ao M6 |
 | `RTLS_STATUS_LED_HEARTBEAT_MS` | 500 | meio período do LED verde | só visual |
 | `RTLS_DW1000_LOG_LEVEL_*`, `RTLS_TWR_LOG_LEVEL_*`, `RTLS_HOST_IF_LOG_LEVEL_*` | padrão do Zephyr | nível de log por módulo | `DBG` no `rtls_twr` registra cada quadro descartado e pode inundar a UART |
@@ -857,6 +872,7 @@ Lidos por `rtls_loc_default_cfg()` na tag. Só a tag usa.
 | SPI escravo do gateway | SPI1, P0.04/06/07, CSN P0.03 | `apps/gateway/boards/*.overlay` | precisa casar com a fiação do host |
 | `def-char` do SPIS | `0x00` | idem | é o "ainda não pronto" do protocolo SPI |
 | DRDY | P0.26, ativo alto | `zephyr,user` no overlay | precisa casar com a IRQ do host |
+| GPIO de debug | P0.15 (pino 3 do conector RPi), ativo alto | `zephyr,user/debug-gpios` nos overlays da tag e do gateway | só é usado com `CONFIG_RTLS_DEBUG_GPIO`; o P0.08 (pino 5) também está livre |
 
 ### 4.12 Constantes no código (não configuráveis)
 

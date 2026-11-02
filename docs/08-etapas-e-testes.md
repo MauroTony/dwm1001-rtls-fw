@@ -337,6 +337,22 @@ python tools/rtls_log.py gw captures/T5.1_gw.csv --sent captures/T5.1_tag_pos.cs
 | `RX dBm` / `1º cam.` | potência média do POSITION no gateway |
 | `enviadas ... recebidas` | só com `--sent`: cruza com as linhas `L,...` da tag pelo `t_ms`, no trecho em que as duas capturas se sobrepõem. É a entrega exata, porque o `round` avança também nas rodadas em que a tag não envia nada |
 
+**Reprocessamento (a partir do M4, T4.8).** O `replay` passa as linhas
+`R,...` de uma captura pelo mesmo LS/EKF do firmware, num *port* em Python
+(`tools/rtls_loc.py`), e grava as posições no formato do `_pos.csv`. Serve
+para comparar métodos e sintonias sem regravar a tag (E7).
+
+```bash
+python tools/rtls_log.py replay captures/T3.2_centro.csv --anchors captures/anchors.csv --out captures/T4.8_ekf_pos.csv
+```
+
+| Opção | Padrão | O que faz |
+|-------|--------|-----------|
+| `--anchors` | — | CSV `anchor,x_mm,y_mm,z_mm`, com as posições do `nodes/aN.conf` (a linha `R` não as leva) |
+| `--method ekf\|ls` | `ekf` | EKF completo ou só a multilateração de cada rodada |
+| `--mode`, `--tag-height`, `--range-std`, `--accel-std`, `--gate`, `--nlos-weight` | os do Kconfig | sintonia do filtro |
+| `--compare <_pos.csv>` | — | diferença por eixo contra as linhas `L` da tag na mesma captura |
+
 ### 2.9 Condições de medida
 
 | Item | Como |
@@ -394,7 +410,7 @@ Sintomas do rádio (PER, `PLL nao travou`, `TX atrasado`) estão em
 |----|---------|----------|
 | T0.1 | `scripts/setup/setup-windows.ps1` (ou `setup-linux.sh`) | termina com `Ambiente pronto.` |
 | T0.2 | `west build -b decawave_dwm1001_dev apps/<app> -d build/<app>` para tag, anchor e gateway | sem erros e **sem warnings** |
-| T0.3a | Linux/WSL: `west twister -T tests -p native_sim` | todos os testes `PASSED` |
+| T0.3a | Linux/WSL: `west twister -T tests -p native_sim`, ou o CI do GitHub Actions a cada push (`.github/workflows/ci.yml`) | todos os testes `PASSED` |
 | T0.3b | Windows: compila `tests/unit` para a placa, grava e lê o console (comandos abaixo) | UART mostra `PROJECT EXECUTION SUCCESSFUL` |
 
 ```bash
@@ -677,6 +693,14 @@ atrasos calibrados por placa (serial do J-Link → valores).
 
 - [x] slots de RESP/REPORT; janela de RESP fechando no meio do slot do FINAL
 - [x] estatísticas a cada 10 s na tag e nas âncoras
+- [x] GPIO de debug para medir a rodada no analisador lógico (`-DCONFIG_RTLS_DEBUG_GPIO=y`)
+
+> [!TIP]
+> O resumo de 10 s mede a rodada com o relógio do kernel (~30 µs de
+> resolução). Para o critério do T3.3 com instrumento, grave a tag com
+> `-DCONFIG_RTLS_DEBUG_GPIO=y` e ligue o analisador no **pino 3 do conector
+> RPi (P0.15)** e no GND: o pino fica alto do POLL ao POSITION, e a largura
+> do pulso é o tempo de rodada mais o EKF.
 
 ### Preparação da bancada
 
@@ -764,7 +788,7 @@ tempo de rodada.
 - [x] `rtls_loc_update()`: predição CV, atualização sequencial, Joseph, gating χ², reinicialização
 - [x] CSV de posição na tag (`L,round,t_ms,x,y,z,sx,sy,sz,n,flags`) e `rtls_log.py pos`
 - [x] tempo do EKF no resumo de 10 s da tag (linha `LOC:`)
-- [ ] reprocessamento offline do CSV de distâncias (T4.8)
+- [x] reprocessamento offline do CSV de distâncias (T4.8): `rtls_log.py replay`, *port* de `lib/loc` em `tools/rtls_loc.py`
 
 ### Testes automatizados (`native_sim`, novos em `tests/unit`)
 
@@ -794,7 +818,15 @@ west twister -T tests/unit -p native_sim -v
 west build -p always -b decawave_dwm1001_dev tests/unit -d build/unit_board
 west flash -d build/unit_board --dev-id $T1
 
-# T4.8: reprocessamento offline do captures/T3.2_centro.csv (ferramenta a implementar)
+# T4.8: reprocessa no PC as distâncias do T3.2 pelo mesmo LS/EKF do firmware.
+# anchors.csv: anchor,x_mm,y_mm,z_mm (uma linha por âncora, as do nodes/aN.conf)
+python tools/rtls_log.py replay captures/T3.2_centro.csv --anchors captures/anchors.csv --out captures/T4.8_ekf_pos.csv
+python tools/rtls_log.py pos captures/T4.8_ekf_pos.csv --true-pos <x>,<y> --skip 10
+# E7: o mesmo CSV só com multilateração, rodada a rodada
+python tools/rtls_log.py replay captures/T3.2_centro.csv --anchors captures/anchors.csv --out captures/T4.8_ls_pos.csv --method ls
+# conferir o firmware: com as linhas L da mesma captura, as diferenças ficam
+# no arredondamento (o PC usa float64, a tag float32)
+python tools/rtls_log.py replay captures/T3.2_centro.csv --anchors captures/anchors.csv --out captures/T4.8_ekf_pos.csv --compare captures/T3.2_centro_pos.csv
 ```
 
 ### Preparação da bancada
@@ -890,7 +922,7 @@ west flash -d build/gateway --dev-id $GW --erase
 | ID | Passo | Esperado |
 |----|-------|----------|
 | T5.1 | 1 tag + gateway, 10 min a 10 Hz, capturando os dois ao mesmo tempo | ≥ 99 % das posições enviadas recebidas (`gw --sent`) |
-| T5.2 | Latência POLL → gateway | ≤ 15 ms; método a definir (GPIO de debug + analisador, *a implementar*) |
+| T5.2 | Latência POLL → gateway, com tag e gateway gravados com `-DCONFIG_RTLS_DEBUG_GPIO=y` e o analisador nos dois pinos 3 do conector RPi (GND comum) | da borda de subida na tag (POLL) ao pulso no gateway (POSITION recebido) ≤ 15 ms |
 | T5.3 | Desligue a tag | entrada expira em 2 s (`CONFIG_RTLS_GATEWAY_TAG_TIMEOUT_MS`) |
 | T5.4 | 2 tags sem TDMA | ambas aparecem; perdas registradas como referência para o M7 |
 
@@ -1474,5 +1506,5 @@ Dependem de decisão do usuário antes de entrar no plano.
 | Proposta | Esforço | Valor para o TCC |
 |----------|---------|------------------|
 | `tools/rtls_log.py --reference` (Δ = 2b contra placa calibrada) | baixo | calibração em série das demais placas |
-| CI no GitHub Actions (build + `native_sim`) | baixo | testes unitários executados a cada push |
-| GPIO de debug para o analisador lógico | baixo | mede latências (T5.2, T6.6) com instrumento |
+| ~~CI no GitHub Actions (build + `native_sim`)~~ | — | feito (`.github/workflows/ci.yml`) |
+| ~~GPIO de debug para o analisador lógico~~ | — | feito (`CONFIG_RTLS_DEBUG_GPIO`, P0.15) |
