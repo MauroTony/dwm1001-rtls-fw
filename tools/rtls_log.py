@@ -494,10 +494,15 @@ def cmd_calib(args):
 def cmd_calib3(args):
     bias = {}
     for pair, path in (("ab", args.ab), ("ac", args.ac), ("bc", args.bc)):
+        # Cada par pode ter a sua distância medida (--d-ab etc.); senão, a comum.
+        true_m = getattr(args, f"d_{pair}") or args.true_distance
+        if true_m is None:
+            sys.exit(f"par {pair.upper()}: falta a distância real "
+                     f"(--true-distance ou --d-{pair})")
         rows = single_anchor(load(path), None, path)
-        bias[pair], mean_m = bias_ticks(rows, args.true_distance)
+        bias[pair], mean_m = bias_ticks(rows, true_m)
         print(f"par {pair.upper()}: {len(rows)} medidas, média {mean_m:.4f} m, "
-              f"viés {bias[pair]:+.1f} ticks")
+              f"real {true_m:.4f} m, viés {bias[pair]:+.1f} ticks")
 
     deltas = {
         "A": bias["ab"] + bias["ac"] - bias["bc"],
@@ -563,16 +568,20 @@ def main():
         ("calib3", cmd_calib3, "ajuste individual com três placas"),
     ):
         p = sub.add_parser(name, help=helptext)
-        p.add_argument("--true-distance", type=float, required=True, help="distância real (m)")
+        p.add_argument("--true-distance", type=float, required=(name == "calib"),
+                       help="distância real (m)" + ("" if name == "calib" else
+                                                    ", comum aos pares sem --d-xx"))
         p.add_argument("--current-tx", type=int, default=DEFAULT_ANT_DLY)
         p.add_argument("--current-rx", type=int, default=DEFAULT_ANT_DLY)
         if name == "calib":
             p.add_argument("csv")
             p.add_argument("--anchor", help="ID da âncora se o CSV tiver várias")
         else:
-            p.add_argument("--ab", required=True, help="CSV do par A-B")
-            p.add_argument("--ac", required=True, help="CSV do par A-C")
-            p.add_argument("--bc", required=True, help="CSV do par B-C")
+            for pair in ("ab", "ac", "bc"):
+                p.add_argument(f"--{pair}", required=True,
+                               help=f"CSV do par {pair[0].upper()}-{pair[1].upper()}")
+                p.add_argument(f"--d-{pair}", type=float,
+                               help=f"distância real do par {pair.upper()} (m)")
         p.set_defaults(func=func)
 
     args = parser.parse_args()
