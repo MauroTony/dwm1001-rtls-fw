@@ -1,0 +1,75 @@
+# CI: compila todos os firmwares e variantes (warnings viram erro) e roda os
+# testes unitários em native_sim. Mesmo caminho do scripts/setup/setup-linux.sh:
+# west init -l (este repositório é o manifesto), west update, SDK pelo west.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: dwm1001-rtls-fw
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pacotes do sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build device-tree-compiler
+
+      - name: West, Zephyr e módulos
+        run: |
+          pip install west
+          west init -l dwm1001-rtls-fw
+          west update --narrow -o=--depth=1
+          west zephyr-export
+          west packages pip --install
+
+      - name: Zephyr SDK (só ARM)
+        working-directory: zephyr
+        run: west sdk install -t arm-zephyr-eabi
+
+      - name: Firmwares (sem warnings)
+        working-directory: dwm1001-rtls-fw
+        run: |
+          set -e
+          build() {
+            app=$1; dir=$2; shift 2
+            echo "::group::$dir"
+            west build -p always -b decawave_dwm1001_dev "$app" -d "build/$dir" -- \
+              -DCONFIG_COMPILER_WARNINGS_AS_ERRORS=y "$@"
+            echo "::endgroup::"
+          }
+          build apps/tag tag
+          build apps/tag tag_1a -DCONFIG_RTLS_TAG_NUM_ANCHORS=1
+          build apps/tag tag_3d -DCONFIG_RTLS_LOC_MODE_3D=y
+          build apps/tag tag_tdma -DCONFIG_RTLS_TAG_TDMA=y
+          build apps/tag tag_nlos -DCONFIG_RTLS_LOC_NLOS_WEIGHTING=y
+          build apps/tag tag_dbg -DCONFIG_RTLS_DEBUG_GPIO=y
+          build apps/anchor anchor_a1 "-DEXTRA_CONF_FILE=nodes/a1.conf"
+          build apps/gateway gateway
+          build apps/gateway gateway_bcn -DCONFIG_RTLS_GATEWAY_BEACON=y
+          build apps/gateway gateway_sim -DCONFIG_RTLS_GATEWAY_SIM_TAGS=20
+          build apps/gateway gateway_dbg -DCONFIG_RTLS_DEBUG_GPIO=y
+          build samples/uwb_pingpong ping
+          build samples/uwb_pingpong pong -DCONFIG_PINGPONG_ROLE_PONG=y
+          build tests/unit unit_board
+
+      - name: Testes unitários (native_sim)
+        working-directory: dwm1001-rtls-fw
+        run: west twister -T tests -p native_sim/native/64 -v --inline-logs
+
+      - name: Ferramentas Python
+        working-directory: dwm1001-rtls-fw
+        run: python -m py_compile tools/rtls_log.py tools/rtls_loc.py
