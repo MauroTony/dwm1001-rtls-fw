@@ -1,3 +1,14 @@
+/*
+ * Tag: GPIO de debug (CONFIG_RTLS_DEBUG_GPIO) no P0.15, pino 3 do conector
+ * RPi: alto do POLL ao POSITION.
+ */
+
+/ {
+	zephyr,user {
+		debug-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+	};
+};
+
 /* Barramento do DW1000 (já habilitado na placa; explícito por segurança). */
 &spi2 {
 	status = "okay";

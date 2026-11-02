@@ -27,3 +27,12 @@ config RTLS_WATCHDOG_TIMEOUT_MS
 	help
 	  Precisa ser maior que a volta mais longa do laço: na tag sem
 	  sincronismo TDMA, ~1 s; no responder da âncora, ~0,5 s.
+
+config RTLS_DEBUG_GPIO
+	bool "GPIO de debug para o analisador lógico"
+	depends on GPIO
+	help
+	  Usa zephyr,user/debug-gpios (P0.15, pino 3 do conector RPi). Na tag,
+	  o pino fica alto do POLL ao POSITION (tempo de rodada, M3); no
+	  gateway, pulsa a cada POSITION recebido (latência POLL -> gateway,
+	  T5.2). Desligado, as chamadas não fazem nada.

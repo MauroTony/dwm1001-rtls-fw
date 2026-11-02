@@ -16,6 +16,7 @@
 #include <zephyr/sys/util.h>
 
 #include <rtls/config.h>
+#include <rtls/debug_gpio.h>
 #include <rtls/dw1000.h>
 #include <rtls/frames.h>
 #include <rtls/host_if.h>
@@ -106,6 +107,8 @@ static void handle_frame(const uint8_t *frame, size_t len, const struct dw1000_r
 	    RTLS_MSG_POSITION) {
 		return;
 	}
+	/* Instante da recepção para o analisador lógico (T5.2). */
+	rtls_debug_gpio_pulse();
 
 	memcpy(&msg, payload, sizeof(msg));
 	err = tag_table_update(hdr.src, &msg, info->rx_power_cdbm, now_ms);
@@ -257,6 +260,10 @@ int main(void)
 	err = rtls_status_led_init();
 	if (err) {
 		LOG_WRN("LEDs indisponiveis (%d)", err);
+	}
+	err = rtls_debug_gpio_init();
+	if (err) {
+		LOG_WRN("GPIO de debug indisponivel (%d)", err);
 	}
 
 	tag_table_init();

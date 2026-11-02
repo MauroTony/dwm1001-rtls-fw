@@ -16,6 +16,7 @@
 #include <zephyr/timing/timing.h>
 
 #include <rtls/config.h>
+#include <rtls/debug_gpio.h>
 #include <rtls/dw1000.h>
 #include <rtls/frames.h>
 #include <rtls/loc.h>
@@ -260,7 +261,10 @@ static void run_cycle(void)
 	struct rtls_range_set ranges;
 	struct rtls_position pos;
 
+	/* GPIO de debug alto do POLL ao POSITION: tempo de rodada (M3) e T5.2 */
+	rtls_debug_gpio_set(true);
 	if (rtls_twr_initiator_run_round(&ranges) != 0) {
+		rtls_debug_gpio_set(false);
 		return;
 	}
 
@@ -272,6 +276,7 @@ static void run_cycle(void)
 		print_position(&pos, ranges.round);
 		(void)send_position(&pos, ranges.round);
 	}
+	rtls_debug_gpio_set(false);
 }
 
 /* Ciclo próprio a CONFIG_RTLS_TAG_UPDATE_RATE_HZ, sem gateway (M3-M6). */
@@ -437,6 +442,10 @@ int main(void)
 	err = rtls_status_led_init();
 	if (err) {
 		LOG_WRN("LEDs indisponiveis (%d)", err);
+	}
+	err = rtls_debug_gpio_init();
+	if (err) {
+		LOG_WRN("GPIO de debug indisponivel (%d)", err);
 	}
 
 	err = radio_init();

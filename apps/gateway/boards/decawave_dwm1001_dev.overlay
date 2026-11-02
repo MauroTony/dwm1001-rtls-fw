@@ -11,6 +11,8 @@
 
 	zephyr,user {
 		drdy-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+		/* GPIO de debug (CONFIG_RTLS_DEBUG_GPIO): pulso a cada POSITION, pino 3 do RPi. */
+		debug-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
 	};
 };
 
