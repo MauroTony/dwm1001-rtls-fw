@@ -7,6 +7,7 @@ Subcomandos:
   stats    estatísticas por âncora (taxa de sucesso, média, desvio, potência)
   pos      estatísticas das posições do EKF (dispersão, RMSE, CEP50/95)
   gw       entrega das posições no gateway (lacunas de round, potência)
+  replay   reprocessa as distâncias no mesmo LS/EKF do firmware (T4.8, E7)
   calib    viés e ajuste do atraso de antena com um par de placas iguais
   calib3   ajuste individual do atraso de antena com três placas (APS014)
 
@@ -15,6 +16,7 @@ Usa só a biblioteca padrão e o pyserial (já instalado no venv do Zephyr).
 
 import argparse
 import csv
+import math
 import re
 import statistics
 import sys
@@ -368,6 +370,110 @@ def cmd_gw(args):
               f"({100.0 * delivered / len(window) if window else 0.0:.2f}%)")
 
 
+def load_anchors(path):
+    """CSV anchor,x_mm,y_mm,z_mm -> {id: (x, y, z) em metros}."""
+    anchors = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            anchor = row["anchor"].strip().lower().removeprefix("0x")
+            anchors[anchor] = tuple(int(row[k]) / 1000.0 for k in ("x_mm", "y_mm", "z_mm"))
+    if not anchors:
+        sys.exit(f"{path}: nenhuma âncora (cabeçalho anchor,x_mm,y_mm,z_mm)")
+    return anchors
+
+
+def cmd_replay(args):
+    import rtls_loc
+
+    anchors = load_anchors(args.anchors)
+    rows = load(args.csv)
+    if not rows:
+        sys.exit("CSV vazio")
+
+    cfg = rtls_loc.Cfg(dim=3 if args.mode == "3d" else 2, tag_height_m=args.tag_height,
+                       range_std_m=args.range_std, accel_std_mps2=args.accel_std,
+                       gate_chi2=args.gate, nlos_weighting=args.nlos_weight)
+    ekf = rtls_loc.Ekf(cfg)
+
+    # Uma rodada = as linhas R com o mesmo (round, t_ms), na ordem da captura.
+    rounds = []
+    for r in rows:
+        key = (r["round"], r["t_ms"])
+        if not rounds or rounds[-1][0] != key:
+            rounds.append((key, []))
+        rounds[-1][1].append(r)
+
+    unknown = set()
+    out_rows = []
+    for (rnd, t_ms), group in rounds:
+        ranges = []
+        for r in group:
+            if r["anchor"] not in anchors:
+                unknown.add(r["anchor"])
+                continue
+            ranges.append(rtls_loc.Range(anchors[r["anchor"]], r["dist_mm"] / 1000.0,
+                                         r["rx_power_cdbm"], r.get("resp_fp_cdbm") or 0))
+
+        if args.method == "ekf":
+            res = ekf.update(t_ms, ranges)
+        else:
+            sol = rtls_loc.solve(cfg, ranges)
+            res = None
+            if sol is not None:
+                pos, cov, s2 = sol
+                var0 = max(cfg.range_std_m ** 2, s2)
+                std = [math.sqrt(max(var0 * cov[i][i], 0.0)) for i in range(cfg.dim)]
+                std += [0.0] * (3 - len(std))
+                res = (pos, std, len(ranges),
+                       rtls_loc.FLAG_VALID | (rtls_loc.FLAG_3D if cfg.dim == 3 else 0))
+        if res is None:
+            continue
+        pos, std, n_used, flags = res
+        out_rows.append({
+            "round": rnd, "t_ms": t_ms,
+            "x_mm": round(pos[0] * 1000), "y_mm": round(pos[1] * 1000),
+            "z_mm": round(pos[2] * 1000),
+            "sx_mm": min(round(std[0] * 1000), 65535), "sy_mm": min(round(std[1] * 1000), 65535),
+            "sz_mm": min(round(std[2] * 1000), 65535),
+            "n_ranges": n_used, "flags": flags,
+        })
+
+    with open(args.out, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=POS_FIELDS)
+        writer.writeheader()
+        writer.writerows(out_rows)
+
+    print(f"{len(rounds)} rodadas, {len(out_rows)} posições ({args.method}, {args.mode}) "
+          f"gravadas em {args.out}")
+    if args.method == "ekf":
+        st = ekf.stats
+        print(f"EKF: {st['accepted']} aceitas, {st['rejected']} rejeitadas, {st['resets']} "
+              f"reinícios, {st['nlos_weighted']} ponderadas por NLOS")
+    if unknown:
+        print(f"ATENÇÃO: âncoras sem posição em {args.anchors} (ignoradas): "
+              f"{', '.join(sorted(unknown))}")
+
+    if args.compare:
+        tag = {r["t_ms"]: r for r in load(args.compare)}
+        diffs = {a: [] for a in ("x", "y", "z")}
+        flag_diff = 0
+        for r in out_rows:
+            t = tag.get(r["t_ms"])
+            if t is None:
+                continue
+            for a in diffs:
+                diffs[a].append(abs(r[f"{a}_mm"] - t[f"{a}_mm"]))
+            flag_diff += (r["flags"] != t["flags"])
+        n = len(diffs["x"])
+        if n == 0:
+            print(f"{args.compare}: nenhuma posição com o mesmo t_ms")
+            return
+        print(f"comparação com {args.compare}: {n} posições em comum, {flag_diff} com flags "
+              "diferentes")
+        for a, v in diffs.items():
+            print(f"  {a}: |Δ| médio {statistics.fmean(v):.1f} mm, máximo {max(v)} mm")
+
+
 def print_delays(label, current_tx, current_rx, delta_ticks):
     half = delta_ticks / 2.0
     tx = round(current_tx + half)
@@ -430,6 +536,21 @@ def main():
     p.add_argument("--skip", type=int, default=0, help="descarta as primeiras N posições")
     p.add_argument("--tag", help="ID da tag, se o CSV do gateway tiver várias")
     p.set_defaults(func=cmd_pos)
+
+    p = sub.add_parser("replay", help="reprocessa as distâncias no LS/EKF do firmware")
+    p.add_argument("csv", help="CSV de distâncias (linhas R)")
+    p.add_argument("--anchors", required=True, help="CSV anchor,x_mm,y_mm,z_mm das âncoras")
+    p.add_argument("--out", required=True, help="posições, no formato do <captura>_pos.csv")
+    p.add_argument("--method", choices=("ekf", "ls"), default="ekf",
+                   help="EKF completo ou multilateração por rodada (E7)")
+    p.add_argument("--mode", choices=("2d", "3d"), default="2d")
+    p.add_argument("--tag-height", type=float, default=1.0, help="z fixo da tag em 2D (m)")
+    p.add_argument("--range-std", type=float, default=0.10, help="sigma_r (m)")
+    p.add_argument("--accel-std", type=float, default=1.0, help="sigma_a (m/s²)")
+    p.add_argument("--gate", type=float, default=6.63, help="limiar do gating (chi²)")
+    p.add_argument("--nlos-weight", action="store_true", help="ponderação por NLOS (M8)")
+    p.add_argument("--compare", help="_pos.csv da tag (linhas L) para conferir o firmware")
+    p.set_defaults(func=cmd_replay)
 
     p = sub.add_parser("gw", help="entrega das posições no gateway (<captura>_gw.csv)")
     p.add_argument("csv")
